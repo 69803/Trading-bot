@@ -129,14 +129,14 @@ async def get_backtest(
 
 @router.delete(
     "/{run_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
     summary="Delete a backtest run",
 )
 async def delete_backtest(
     run_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> dict:
     result = await db.execute(
         select(BacktestRun).where(
             BacktestRun.id == run_id, BacktestRun.user_id == current_user.id
@@ -153,3 +153,5 @@ async def delete_backtest(
             detail="Cannot delete a running backtest",
         )
     await db.delete(run)
+    await db.commit()
+    return {"deleted": True, "run_id": str(run_id)}
