@@ -20,15 +20,18 @@ log = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: seed DB on startup, dispose engine on shutdown."""
     log.info("Starting up", environment=settings.ENVIRONMENT)
-    async with AsyncSessionFactory() as session:
-        try:
-            await init_db(session)
-            await session.commit()
-            log.info("Database seeding complete")
-        except Exception:
-            await session.rollback()
-            log.exception("Database seeding failed")
-            raise
+    if AsyncSessionFactory is not None:
+        async with AsyncSessionFactory() as session:
+            try:
+                await init_db(session)
+                await session.commit()
+                log.info("Database seeding complete")
+            except Exception:
+                await session.rollback()
+                log.exception("Database seeding failed")
+                raise
+    else:
+        log.warning("DATABASE_URL not set — skipping DB initialisation")
 
     start_scheduler()
     log.info("Scheduler started")
@@ -66,8 +69,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield  # Application is running
 
     stop_scheduler()
-    log.info("Shutting down — disposing database engine")
-    await engine.dispose()
+    if engine is not None:
+        log.info("Shutting down — disposing database engine")
+        await engine.dispose()
 
 
 def create_app() -> FastAPI:

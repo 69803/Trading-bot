@@ -1,6 +1,8 @@
+import os
 from collections.abc import AsyncGenerator
-from typing import TypeAlias
+from typing import Optional, TypeAlias
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import (
     AsyncSession as _AsyncSession,
     async_sessionmaker,
@@ -10,24 +12,29 @@ from sqlalchemy.ext.asyncio import (
 from app.core.config import settings
 
 # ---------------------------------------------------------------------------
-# Engine & session factory
+# Engine & session factory — only created when DATABASE_URL env var is set
 # ---------------------------------------------------------------------------
 
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.ENVIRONMENT != "production",
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-)
+_DB_URL: Optional[str] = os.environ.get("DATABASE_URL")
 
-AsyncSessionFactory: async_sessionmaker[_AsyncSession] = async_sessionmaker(
-    bind=engine,
-    class_=_AsyncSession,
-    expire_on_commit=False,
-    autoflush=False,
-    autocommit=False,
-)
+if _DB_URL:
+    engine = create_async_engine(
+        _DB_URL,
+        echo=settings.ENVIRONMENT != "production",
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
+    AsyncSessionFactory: Optional[async_sessionmaker[_AsyncSession]] = async_sessionmaker(
+        bind=engine,
+        class_=_AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+        autocommit=False,
+    )
+else:
+    engine = None  # type: ignore[assignment]
+    AsyncSessionFactory = None
 
 # Public type alias used across the codebase
 AsyncSession: TypeAlias = _AsyncSession
@@ -40,9 +47,15 @@ AsyncSession: TypeAlias = _AsyncSession
 async def get_db() -> AsyncGenerator[_AsyncSession, None]:
     """Yield an async database session for use as a FastAPI dependency.
 
+    Raises 503 if no DATABASE_URL is configured.
     Commits the transaction on successful completion and rolls back on any
     unhandled exception, then always closes the session.
     """
+    if AsyncSessionFactory is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not configured",
+        )
     async with AsyncSessionFactory() as session:
         try:
             yield session
