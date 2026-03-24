@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: trading-backend
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trading-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://your-frontend.onrender.com   # update this
+      - key: MARKET_DATA_PROVIDER
+        value: gbm
+      - key: INITIAL_BALANCE
+        value: "10000.0"
+      - key: ADMIN_EMAIL
+        sync: false   # set in Render dashboard
+      - key: ADMIN_PASSWORD
+        sync: false   # set in Render dashboard
+      - key: TWELVE_DATA_API_KEY
+        sync: false   # optional — set if you have a key
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "30"
+
+databases:
+  - name: trading-db
+    databaseName: tradingdb
+    user: trader
+    region: oregon
+    plan: free
