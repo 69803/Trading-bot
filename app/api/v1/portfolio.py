@@ -312,14 +312,14 @@ async def close_position(
 
 @router.delete(
     "/positions/{position_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
     summary="Delete a closed position record (cleanup only)",
 )
 async def delete_position(
     position_id: str,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> dict:
     """
     Permanently delete a position record. Only closed positions may be deleted.
     Use POST /positions/{id}/close first if the position is still open.
@@ -356,6 +356,7 @@ async def delete_position(
 
     await db.delete(position)
     await db.commit()
+    return {"deleted": True, "position_id": position_id}
 
 
 @router.post("/reset", summary="Reset portfolio to a fresh state")
