@@ -1,5 +1,6 @@
 """FastAPI application factory and lifespan handler."""
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -91,30 +92,22 @@ def create_app() -> FastAPI:
     )
 
     # ---------------------------------------------------------------------------
-    # CORS — adjust origins for production deployments
+    # CORS — fixed list + optional FRONTEND_URL override
     # ---------------------------------------------------------------------------
-    # NOTE: allow_origins=["*"] cannot be combined with allow_credentials=True
-    # per the CORS spec — browsers reject it.  Always list origins explicitly.
-    if settings.ENVIRONMENT == "development":
-        allow_origins = [
-            "http://localhost:3000",
-            "http://localhost:3001",
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1:3001",
-        ]
-    else:
-        # Set FRONTEND_URL in Render environment variables to your frontend domain.
-        # Multiple origins can be comma-separated: "https://a.com,https://b.com"
-        frontend_url = settings.FRONTEND_URL
-        allow_origins = (
-            [u.strip() for u in frontend_url.split(",") if u.strip()]
-            if frontend_url
-            else ["https://trading-bot-frontend-liart.vercel.app"]
-        )
+    allowed_origins = [
+        "https://trading-bot-frontend-liart.vercel.app",
+        "http://localhost:3000",
+    ]
+
+    frontend_url = os.getenv("FRONTEND_URL")
+    if frontend_url and frontend_url not in allowed_origins:
+        allowed_origins.append(frontend_url)
+
+    log.info("CORS allowed_origins", origins=allowed_origins)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins,
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
