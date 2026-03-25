@@ -276,6 +276,22 @@ async def start_bot(
     return {"message": "Bot started successfully", "is_running": True}
 
 
+# ── DELETE /logs ──────────────────────────────────────────────────────────────
+
+@router.delete("/logs", summary="Clear all bot cycle logs for the current user")
+async def clear_bot_logs(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from sqlalchemy import delete
+    from app.models.bot_log import BotLog
+    await db.execute(delete(BotLog).where(BotLog.user_id == current_user.id))
+    state = await _get_or_create_bot_state(current_user, db)
+    state.last_log = None
+    await db.commit()
+    return {"cleared": True}
+
+
 # ── POST /stop ────────────────────────────────────────────────────────────────
 
 @router.post("/stop", summary="Stop the auto-trading bot")
