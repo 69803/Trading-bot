@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import analytics, auth, backtest, bot, market, orders, portfolio, risk, signals, strategy, trades
+from app.api.v1 import accounting, analytics, auth, backtest, bot, market, orders, portfolio, risk, signals, strategy, trades
 
 api_router = APIRouter()
 
@@ -16,4 +16,5 @@ api_router.include_router(risk.router,      prefix="/risk",      tags=["risk"])
 api_router.include_router(backtest.router,  prefix="/backtest",  tags=["backtest"])
 api_router.include_router(bot.router,       prefix="/bot",       tags=["bot"])
 api_router.include_router(signals.router,   prefix="/signals",   tags=["signals"])
-api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
+api_router.include_router(analytics.router,   prefix="/analytics",   tags=["analytics"])
+api_router.include_router(accounting.router, prefix="/accounting", tags=["accounting"])
