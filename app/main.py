@@ -106,7 +106,11 @@ def create_app() -> FastAPI:
         # Set FRONTEND_URL in Render environment variables to your frontend domain.
         # Multiple origins can be comma-separated: "https://a.com,https://b.com"
         frontend_url = settings.FRONTEND_URL
-        allow_origins = [u.strip() for u in frontend_url.split(",") if u.strip()] if frontend_url else []
+        allow_origins = (
+            [u.strip() for u in frontend_url.split(",") if u.strip()]
+            if frontend_url
+            else ["https://trading-bot-frontend-liart.vercel.app"]
+        )
 
     app.add_middleware(
         CORSMiddleware,
