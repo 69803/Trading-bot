@@ -678,6 +678,16 @@ async def _process_symbol(
         rsi_oversold=float(config.rsi_oversold),
     )
 
+    # ── Guard: insufficient data — return before logging any indicator values ──
+    if technical.hold_reason and "insufficient_data" in technical.hold_reason:
+        log.warning(
+            "SKIPPED [insufficient_data]",
+            symbol=symbol,
+            candles=len(candles),
+            reason=technical.hold_reason,
+        )
+        return f"SKIPPED [insufficient_data]: {technical.hold_reason}", False
+
     current_price = technical.indicators.price
 
     # ── Full decision-path trace (emitted every cycle for diagnosis) ──────────

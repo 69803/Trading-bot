@@ -124,23 +124,21 @@ def analyze(
     n = len(candles)
     now = datetime.now(timezone.utc)
 
-    # ── Guard: not enough data ───────────────────────────────────────────────
-    if n < MIN_CANDLES:
+    # ── Guard: not enough data (dynamic — based on actual indicator periods) ─
+    # MACD needs slow_period + signal_period candles before the histogram is
+    # valid.  EMA slow needs ema_slow_period candles.  Use whichever is larger,
+    # with a 10-candle safety buffer so the last value is never right on the edge.
+    required = max(MIN_CANDLES, ema_slow_period + 10, macd_slow + macd_signal + 10)
+    if n < required:
         log.warning(
-            "Insufficient candles for technical analysis",
-            symbol=symbol, got=n, need=MIN_CANDLES,
+            "SKIPPED [insufficient_data]: not enough candles",
+            symbol=symbol, got=n, need=required,
+            ema_slow_period=ema_slow_period, macd_slow=macd_slow,
         )
-        # DEBUG: show last candle timestamps so we know if data is stale
-        if candles:
-            last5 = candles[-5:] if n >= 5 else candles
-            log.warning(
-                "CANDLE DEBUG: last candles received",
-                symbol=symbol,
-                count=n,
-                last_timestamps=[c.get("timestamp", "?") for c in last5],
-                last_closes=[round(float(c["close"]), 5) for c in last5],
-            )
-        return _hold_signal(symbol, timeframe, candles, now, reason="Insufficient candle history")
+        return _hold_signal(
+            symbol, timeframe, candles, now,
+            reason=f"SKIPPED [insufficient_data]: need {required} candles, got {n}",
+        )
 
     # ── Extract OHLCV arrays ─────────────────────────────────────────────────
     closes  = [float(c["close"])  for c in candles]
@@ -208,14 +206,15 @@ def analyze(
     ]
     if nan_indicators:
         log.warning(
-            "TECH DEBUG: NaN indicators — HOLD forced",
+            "SKIPPED [insufficient_data]: NaN indicators after computation",
             symbol=symbol,
             nan_indicators=nan_indicators,
             candles=n,
+            ema_slow_period=ema_slow_period,
         )
         return _hold_signal(
             symbol, timeframe, candles, now,
-            reason="Indicators still warming up — need more candle history",
+            reason=f"SKIPPED [insufficient_data]: NaN in {nan_indicators} with {n} candles",
         )
 
     # Safe ADX: default to 25 (neutral) when still warming up
@@ -662,13 +661,13 @@ def _hold_signal(
         reasons     = [reason],
         indicators  = IndicatorValues(
             price          = price,
-            rsi            = float("nan"),
-            ema_fast       = float("nan"),
-            ema_slow       = float("nan"),
-            macd           = float("nan"),
-            macd_signal    = float("nan"),
-            macd_histogram = float("nan"),
-            atr            = float("nan"),
+            rsi            = 0.0,
+            ema_fast       = 0.0,
+            ema_slow       = 0.0,
+            macd           = 0.0,
+            macd_signal    = 0.0,
+            macd_histogram = 0.0,
+            atr            = 0.0,
             volume_ratio   = 1.0,
         ),
         analyzed_at  = now,
