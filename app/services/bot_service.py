@@ -66,7 +66,8 @@ from app.services.news_service import get_news
 
 log = get_logger(__name__)
 
-CANDLE_LIMIT = 250  # enough for EMA-200 warm-up
+CANDLE_LIMIT = 250          # enough for EMA-200 warm-up
+MIN_CONFIDENCE_THRESHOLD = 40  # minimum decision confidence required to open a trade (0-100)
 
 # Float precision tolerance for TP/SL comparisons.
 #
@@ -820,6 +821,19 @@ async def _process_symbol(
             f"MACD={ind.macd_histogram:+.5f} "
             f"sentiment={sentiment.label}({sentiment.sentiment_score:+.2f})"
             f"{override}"
+        ), False
+
+    # ── Confidence filter — skip low-quality signals before any trade ────────
+    if decision.confidence < MIN_CONFIDENCE_THRESHOLD:
+        log.info(
+            "SKIPPED [low_confidence]",
+            symbol=symbol,
+            confidence=decision.confidence,
+            threshold=MIN_CONFIDENCE_THRESHOLD,
+            direction=decision.direction,
+        )
+        return (
+            f"SKIPPED [low_confidence]: confidence={decision.confidence} below threshold={MIN_CONFIDENCE_THRESHOLD}"
         ), False
 
     # ── Phase 5: Risk Manager ────────────────────────────────────────────────
