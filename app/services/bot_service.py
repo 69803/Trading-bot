@@ -66,8 +66,17 @@ from app.services.news_service import get_news
 
 log = get_logger(__name__)
 
-CANDLE_LIMIT = 250          # enough for EMA-200 warm-up
-MIN_CONFIDENCE_THRESHOLD = 40  # minimum decision confidence required to open a trade (0-100)
+CANDLE_LIMIT = 250              # enough for EMA-200 warm-up
+
+# ── Entry quality thresholds ──────────────────────────────────────────────────
+MIN_CONFIDENCE_THRESHOLD = 40   # minimum decision confidence to open any trade (0-100)
+MIN_ADX_FOR_ENTRY        = 20   # minimum ADX to confirm a trend exists
+COOLDOWN_SECONDS         = 900  # minimum seconds between trades on the same symbol (15 min)
+MIN_ATR_PCT              = 0.04 # minimum ATR as % of price (filters micro-range setups)
+
+# Per-symbol stricter rules for noisy pairs
+EURUSD_MIN_CONFIDENCE    = 55   # EURUSD requires higher confidence than default
+EURUSD_MIN_ADX           = 25   # EURUSD requires stronger trend than default
 
 # Float precision tolerance for TP/SL comparisons.
 #
@@ -404,8 +413,29 @@ async def _process_symbol(
     if close_msgs:
         return " | ".join(close_msgs), False
 
-    # ── Cooldown check — disabled for testing ────────────────────────────────
-    log.debug("SYMBOL COOLDOWN DISABLED FOR TESTING", symbol=symbol)
+    # ── Cooldown check — skip symbol if a trade was opened too recently ───────
+    _last_pos_res = await db.execute(
+        select(Position)
+        .where(Position.portfolio_id == portfolio.id, Position.symbol == symbol)
+        .order_by(Position.opened_at.desc())
+        .limit(1)
+    )
+    _last_pos = _last_pos_res.scalars().first()
+    if _last_pos and _last_pos.opened_at:
+        _pos_ts = _last_pos.opened_at
+        if _pos_ts.tzinfo is None:
+            _pos_ts = _pos_ts.replace(tzinfo=timezone.utc)
+        _elapsed = (datetime.now(timezone.utc) - _pos_ts).total_seconds()
+        if _elapsed < COOLDOWN_SECONDS:
+            _remaining = int(COOLDOWN_SECONDS - _elapsed)
+            log.info(
+                "SKIPPED [cooldown]",
+                symbol=symbol,
+                elapsed_s=int(_elapsed),
+                remaining_s=_remaining,
+                cooldown_s=COOLDOWN_SECONDS,
+            )
+            return f"SKIPPED [cooldown]: symbol={symbol} remaining={_remaining}s", False
 
     # ── Economic calendar filter ─────────────────────────────────────────────
     # Window: events within 60 min ahead OR up to POST_EVENT_SKIP_MIN min past.
@@ -823,18 +853,57 @@ async def _process_symbol(
             f"{override}"
         ), False
 
-    # ── Confidence filter — skip low-quality signals before any trade ────────
-    if decision.confidence < MIN_CONFIDENCE_THRESHOLD:
+    _sym_upper = symbol.upper()
+    _is_eurusd = _sym_upper == "EURUSD"
+
+    # ── Filter A: minimum confidence ─────────────────────────────────────────
+    _conf_threshold = EURUSD_MIN_CONFIDENCE if _is_eurusd else MIN_CONFIDENCE_THRESHOLD
+    if decision.confidence < _conf_threshold:
         log.info(
             "SKIPPED [low_confidence]",
             symbol=symbol,
             confidence=decision.confidence,
-            threshold=MIN_CONFIDENCE_THRESHOLD,
+            threshold=_conf_threshold,
             direction=decision.direction,
         )
         return (
-            f"SKIPPED [low_confidence]: confidence={decision.confidence} below threshold={MIN_CONFIDENCE_THRESHOLD}"
+            f"SKIPPED [low_confidence]: confidence={decision.confidence} below threshold={_conf_threshold}"
         ), False
+
+    # ── Filter B / D: minimum ADX (trend strength) ───────────────────────────
+    _adx_val = technical.indicators.adx if technical.indicators else None
+    _adx_threshold = EURUSD_MIN_ADX if _is_eurusd else MIN_ADX_FOR_ENTRY
+    if _adx_val is not None and _adx_val < _adx_threshold:
+        log.info(
+            "SKIPPED [weak_trend]",
+            symbol=symbol,
+            adx=round(_adx_val, 2),
+            threshold=_adx_threshold,
+            direction=decision.direction,
+        )
+        _tag = "eurusd_filter" if _is_eurusd else "weak_trend"
+        return (
+            f"SKIPPED [{_tag}]: ADX={_adx_val:.1f} below {_adx_threshold} — no clear trend"
+        ), False
+
+    # ── Filter E: minimum ATR range — skip micro-range / tight setups ────────
+    _atr_val   = technical.indicators.atr if technical.indicators else None
+    _price_ref = technical.indicators.price if technical.indicators else current_price
+    if _atr_val and _price_ref and _price_ref > 0:
+        _atr_pct = _atr_val / _price_ref * 100
+        if _atr_pct < MIN_ATR_PCT:
+            log.info(
+                "SKIPPED [insufficient_range]",
+                symbol=symbol,
+                atr=round(_atr_val, 6),
+                atr_pct=round(_atr_pct, 4),
+                min_atr_pct=MIN_ATR_PCT,
+                direction=decision.direction,
+            )
+            return (
+                f"SKIPPED [insufficient_range]: ATR={_atr_val:.5f} ({_atr_pct:.3f}%) "
+                f"below minimum {MIN_ATR_PCT}% — setup too tight"
+            ), False
 
     # ── Phase 5: Risk Manager ────────────────────────────────────────────────
     if risk is None:
