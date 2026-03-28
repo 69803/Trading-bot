@@ -68,6 +68,8 @@ async def create_backtest(
         "commission": body.commission_pct,
         "use_sentiment": body.use_sentiment,
         "position_size_pct": body.position_size_pct,
+        "force_pct_tp_sl": body.force_pct_tp_sl,
+        "use_signal_exit": body.use_signal_exit,
     }
     run = await backtest_service.create_backtest_run(
         db, user_id=current_user.id, params=params

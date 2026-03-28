@@ -51,6 +51,7 @@ from app.core.logger import get_logger
 from app.schemas.decision import FinalDecision
 from app.schemas.sentiment import SentimentResult
 from app.schemas.technical import TechnicalSignal
+from app.services.technical_engine import BUY_THRESHOLD
 
 log = get_logger(__name__)
 

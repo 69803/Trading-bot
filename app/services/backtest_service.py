@@ -52,7 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.backtest_run import BacktestRun
 from app.schemas.sentiment import NewsItem, SentimentResult
 from app.services import decision_engine, risk_manager, sentiment_engine, technical_engine
-from app.services.market_data_service import market_data_service
+from app.services.market_data_router import market_data_router as market_data_service
 
 # Minimum candles before the engine starts emitting signals (matches technical_engine)
 _MIN_CANDLES = 50
@@ -115,6 +115,8 @@ async def run_backtest(db: AsyncSession, run_id: UUID) -> None:
         commission_rate = float(params.get("commission", 0.001))
         position_size_pct = float(params.get("position_size_pct", 0.05))
         use_sentiment   = bool(params.get("use_sentiment", True))
+        force_pct_tp_sl = bool(params.get("force_pct_tp_sl", False))
+        use_signal_exit = bool(params.get("use_signal_exit", True))
 
         risk_proxy = _RiskProxy(
             max_position_size_pct = position_size_pct,
@@ -210,7 +212,7 @@ async def run_backtest(db: AsyncSession, run_id: UUID) -> None:
             # ── Check open position for TP/SL/signal exit ────────────────────
             if position is not None:
                 closed, exit_price, exit_reason = _check_exit(
-                    position, close, decision
+                    position, close, decision, use_signal_exit=use_signal_exit
                 )
                 if closed:
                     pnl, cash = _close_position(
@@ -238,27 +240,44 @@ async def run_backtest(db: AsyncSession, run_id: UUID) -> None:
 
             # ── Open new position if no position and decision is actionable ──
             if position is None and decision.is_actionable:
-                # Phase 5: risk_manager
-                assessment = risk_manager.assess(
-                    decision             = decision,
-                    technical            = signal,
-                    equity               = cash,
-                    open_positions_count = 0,  # always 0 — one-at-a-time
-                    risk_settings        = risk_proxy,
-                    invest_amount        = cash * position_size_pct,
-                )
+                invest_amount = cash * position_size_pct
 
-                if assessment.approved:
-                    invest   = assessment.position_size_dollars
-                    qty      = invest / close if close > 0 else 0.0
-                    comm     = invest * commission_rate
+                if force_pct_tp_sl:
+                    # Bypass ATR entirely — use percentage-based TP/SL directly.
+                    # sizing still uses position_size_pct of current cash.
+                    invest = round(min(invest_amount, cash), 2)
+                    invest = max(0.01, invest)
+                    qty    = invest / close if close > 0 else 0.0
+                    comm   = invest * commission_rate
                     total_cost = invest + comm
+                    approved   = cash >= total_cost and qty > 0
+                    sl = _fallback_sl(decision.direction, close, stop_loss_pct)
+                    tp = _fallback_tp(decision.direction, close, take_profit_pct)
+                    sizing_method = "pct_forced"
+                else:
+                    # Phase 5: risk_manager (ATR-based preferred, pct fallback)
+                    assessment = risk_manager.assess(
+                        decision             = decision,
+                        technical            = signal,
+                        equity               = cash,
+                        open_positions_count = 0,  # always 0 — one-at-a-time
+                        risk_settings        = risk_proxy,
+                        invest_amount        = invest_amount,
+                    )
+                    approved  = assessment.approved
+                    invest    = assessment.position_size_dollars if approved else 0.0
+                    qty       = invest / close if close > 0 else 0.0
+                    comm      = invest * commission_rate
+                    total_cost = invest + comm
+                    sl = assessment.stop_loss_price   or _fallback_sl(decision.direction, close, stop_loss_pct)
+                    tp = assessment.take_profit_price or _fallback_tp(decision.direction, close, take_profit_pct)
+                    sizing_method = assessment.sizing_method if approved else "rejected"
+                    if approved and assessment.sizing_method == "atr_based":
+                        atr_used_count += 1
 
+                if approved:
                     if cash >= total_cost and qty > 0:
                         cash -= total_cost
-
-                        sl = assessment.stop_loss_price   or _fallback_sl(decision.direction, close, stop_loss_pct)
-                        tp = assessment.take_profit_price or _fallback_tp(decision.direction, close, take_profit_pct)
 
                         position = {
                             "side"           : "long" if decision.direction == "BUY" else "short",
@@ -272,14 +291,12 @@ async def run_backtest(db: AsyncSession, run_id: UUID) -> None:
                             "tech_conf"      : signal.confidence,
                             "final_conf"     : decision.confidence,
                             "sentiment_label": sentiment.label,
-                            "sizing_method"  : assessment.sizing_method,
+                            "sizing_method"  : sizing_method,
                         }
 
                         tech_conf_sum  += signal.confidence
                         final_conf_sum += decision.confidence
                         executed_count += 1
-                        if assessment.sizing_method == "atr_based":
-                            atr_used_count += 1
 
             # ── Mark-to-market equity ─────────────────────────────────────────
             if position:
@@ -365,6 +382,7 @@ def _check_exit(
     position: Dict[str, Any],
     close: float,
     decision,
+    use_signal_exit: bool = True,
 ) -> Tuple[bool, float, str]:
     """Return (should_close, exit_price, reason)."""
     side = position["side"]
@@ -376,14 +394,14 @@ def _check_exit(
             return True, sl, "stop_loss"
         if close >= tp:
             return True, tp, "take_profit"
-        if decision.direction == "SELL":
+        if use_signal_exit and decision.direction == "SELL":
             return True, close, "signal_exit"
     else:  # short
         if close >= sl:
             return True, sl, "stop_loss"
         if close <= tp:
             return True, tp, "take_profit"
-        if decision.direction == "BUY":
+        if use_signal_exit and decision.direction == "BUY":
             return True, close, "signal_exit"
 
     return False, close, ""
@@ -580,20 +598,26 @@ def _compute_metrics(
         r = t.get("exit_reason", "unknown")
         exit_reasons[r] = exit_reasons.get(r, 0) + 1
 
+    # Expectancy per trade: (win_rate × avg_win) + (loss_rate × avg_loss)
+    # avg_loss is already negative, so this gives the expected $ per trade.
+    win_rate_dec = win_rate / 100.0
+    expectancy   = round(win_rate_dec * avg_win + (1.0 - win_rate_dec) * avg_loss, 4)
+
     return {
         # Core performance
-        "total_trades"    : total_trades,
-        "win_trades"      : win_trades,
-        "loss_trades"     : loss_trades,
-        "win_rate"        : round(win_rate, 2),
-        "net_pnl"         : round(net_pnl, 4),
-        "net_pnl_pct"     : round((net_pnl / initial_capital) * 100, 2) if initial_capital > 0 else 0.0,
-        "final_equity"    : round(final_equity, 4),
-        "max_drawdown"    : round(max_dd * 100, 4),
-        "sharpe_ratio"    : round(sharpe, 4),
-        "profit_factor"   : round(profit_factor, 4),
-        "avg_win"         : round(avg_win, 4),
-        "avg_loss"        : round(avg_loss, 4),
+        "total_trades"         : total_trades,
+        "win_trades"           : win_trades,
+        "loss_trades"          : loss_trades,
+        "win_rate"             : round(win_rate, 2),
+        "net_pnl"              : round(net_pnl, 4),
+        "net_pnl_pct"          : round((net_pnl / initial_capital) * 100, 2) if initial_capital > 0 else 0.0,
+        "final_equity"         : round(final_equity, 4),
+        "max_drawdown"         : round(max_dd * 100, 4),
+        "sharpe_ratio"         : round(sharpe, 4),
+        "profit_factor"        : round(profit_factor, 4),
+        "avg_win"              : round(avg_win, 4),
+        "avg_loss"             : round(avg_loss, 4),
+        "expectancy_per_trade" : expectancy,
         # Engine breakdown
         "decisions_breakdown"  : decisions_breakdown,
         "exit_reasons"         : exit_reasons,

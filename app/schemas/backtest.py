@@ -22,6 +22,8 @@ class BacktestRunRequest(BaseModel):
     commission_pct: float = 0.001
     use_sentiment: bool = True          # False → technical-only (ignores news layer)
     position_size_pct: float = 0.05    # fraction of equity per trade (0.01–0.20)
+    force_pct_tp_sl: bool = False      # True → skip ATR, use stop_loss_pct/take_profit_pct directly
+    use_signal_exit: bool = True       # False → only TP/SL closes positions (no signal-based exit)
 
     @field_validator("end_date")
     @classmethod

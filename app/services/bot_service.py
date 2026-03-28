@@ -187,6 +187,13 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
     _all_open: List[Position] = list(_all_open_result.scalars().all())
     if _all_open:
         for _p in _all_open:
+            _p_opened = _p.opened_at
+            if _p_opened is not None and _p_opened.tzinfo is None:
+                _p_opened = _p_opened.replace(tzinfo=timezone.utc)
+            _p_hold_min = (
+                round((_cycle_ts - _p_opened).total_seconds() / 60.0, 1)
+                if _p_opened else None
+            )
             log.info(
                 "BOT CYCLE OPEN POSITION",
                 cycle_at=_cycle_ts.isoformat(),
@@ -198,12 +205,7 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
                 stop_loss=str(_p.stop_loss_price),
                 prev_evaluated_price=str(_p.prev_evaluated_price),
                 opened_at=_p.opened_at.isoformat() if _p.opened_at else None,
-                open_seconds=round(
-                    (_cycle_ts - (
-                        _p.opened_at if _p.opened_at.tzinfo is not None
-                        else _p.opened_at.replace(tzinfo=timezone.utc)
-                    )).total_seconds(), 1
-                ) if _p.opened_at else None,
+                hold_time_minutes=_p_hold_min,
             )
     else:
         log.info("BOT CYCLE OPEN POSITION", cycle_at=_cycle_ts.isoformat(), open_count=0)
@@ -844,13 +846,19 @@ async def _process_symbol(
         )
         override = f" [{decision.override_reason}]" if decision.override_reason else ""
         ind = technical.indicators
+        _ef = int(config.ema_fast)
+        _es = int(config.ema_slow)
+        # Use actual configured EMA periods in the label so RSI=0/EMA=0 is
+        # clearly identified as a _hold_signal fallback, not a real indicator.
+        _valid_indicators = ind.rsi != 0.0 or ind.ema_fast != 0.0
+        _data_tag = "" if _valid_indicators else " [data=fallback_hold]"
         return (
             f"{decision.direction} | tech={technical.direction}({technical.confidence}) "
             f"score={technical.composite_score:+d} "
-            f"RSI={ind.rsi:.1f} EMA50={ind.ema_fast:.5f} EMA200={ind.ema_slow:.5f} "
+            f"RSI={ind.rsi:.1f} EMA{_ef}={ind.ema_fast:.5f} EMA{_es}={ind.ema_slow:.5f} "
             f"MACD={ind.macd_histogram:+.5f} "
             f"sentiment={sentiment.label}({sentiment.sentiment_score:+.2f})"
-            f"{override}"
+            f"{override}{_data_tag}"
         ), False
 
     _sym_upper = symbol.upper()
@@ -1179,6 +1187,18 @@ async def _process_symbol(
             )
 
         log.info("ORDER CREATED — BUY filled", symbol=symbol, order_id=str(order.id))
+        log.info(
+            "TRADE OPENED",
+            symbol=symbol,
+            side="long",
+            entry_price=round(current_price, 6),
+            stop_loss=round(float(assessment.stop_loss_price), 6) if assessment.stop_loss_price else None,
+            take_profit=round(float(assessment.take_profit_price), 6) if assessment.take_profit_price else None,
+            sizing_method=assessment.sizing_method,
+            investment=assessment.position_size_dollars,
+            confidence=decision.confidence,
+            sentiment=sentiment.label,
+        )
         await log_decision(
             db, user_id=user_id, portfolio_id=portfolio.id,
             technical=technical, sentiment=sentiment, decision=decision,
@@ -1270,6 +1290,18 @@ async def _process_symbol(
                 tp=assessment.take_profit_price,
             )
 
+        log.info(
+            "TRADE OPENED",
+            symbol=symbol,
+            side="short",
+            entry_price=round(current_price, 6),
+            stop_loss=round(float(assessment.stop_loss_price), 6) if assessment.stop_loss_price else None,
+            take_profit=round(float(assessment.take_profit_price), 6) if assessment.take_profit_price else None,
+            sizing_method=assessment.sizing_method,
+            investment=assessment.position_size_dollars,
+            confidence=decision.confidence,
+            sentiment=sentiment.label,
+        )
         await log_decision(
             db, user_id=user_id, portfolio_id=portfolio.id,
             technical=technical, sentiment=sentiment, decision=decision,
@@ -1393,6 +1425,29 @@ async def _close_position_directly(
     portfolio.updated_at   = now
 
     await db.flush()
+
+    # ── Structured TRADE CLOSED log — single source of truth for every close ──
+    _opened = position.opened_at
+    if _opened is not None:
+        if _opened.tzinfo is None:
+            _opened = _opened.replace(tzinfo=timezone.utc)
+        _hold_min = round((now - _opened).total_seconds() / 60.0, 1)
+    else:
+        _hold_min = None
+    _invest   = float(position.investment_amount or position.avg_entry_price * position.quantity)
+    _pnl_pct  = round(float(pnl) / _invest * 100, 3) if _invest > 0 else 0.0
+    log.info(
+        "TRADE CLOSED",
+        symbol=position.symbol,
+        side=position.side,
+        close_reason=reason,
+        entry_price=round(float(position.avg_entry_price), 6),
+        close_price=round(float(price), 6),
+        pnl=round(float(pnl), 4),
+        pnl_pct=_pnl_pct,
+        hold_time_minutes=_hold_min,
+        investment=round(_invest, 2),
+    )
 
     sign = "+" if pnl >= 0 else ""
     return (
@@ -1699,6 +1754,22 @@ async def _evaluate_open_positions(
             close_reason = ""
             trigger_src  = "none"
 
+        # Hold-time and floating PnL — observability only, no trading logic
+        _eval_now = datetime.now(timezone.utc)
+        _pos_opened = pos.opened_at
+        if _pos_opened is not None and _pos_opened.tzinfo is None:
+            _pos_opened = _pos_opened.replace(tzinfo=timezone.utc)
+        _eval_hold_min = (
+            round((_eval_now - _pos_opened).total_seconds() / 60.0, 1)
+            if _pos_opened else None
+        )
+        _qty = float(pos.quantity)
+        _unrealized_pnl = round(
+            (live_price - entry) * _qty if pos.side == "long"
+            else (entry - live_price) * _qty,
+            4,
+        )
+
         log.info(
             "POSITION EVAL",
             eval_at=eval_at,
@@ -1726,6 +1797,9 @@ async def _evaluate_open_positions(
             skipped=False,
             trigger_source=trigger_src,
             close_decision=close_reason or "hold",
+            # Observability — hold time and floating PnL
+            hold_time_minutes=_eval_hold_min,
+            unrealized_pnl=_unrealized_pnl,
         )
 
         # ── Always update prev_evaluated_price before any close logic ─────────
