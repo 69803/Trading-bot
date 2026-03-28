@@ -75,7 +75,7 @@ COOLDOWN_SECONDS         = 900  # minimum seconds between trades on the same sym
 MIN_ATR_PCT              = 0.04 # minimum ATR as % of price (filters micro-range setups)
 
 # Per-symbol stricter rules for noisy pairs
-EURUSD_MIN_CONFIDENCE    = 55   # EURUSD requires higher confidence than default
+EURUSD_MIN_CONFIDENCE    = 40   # EURUSD requires higher confidence than default
 EURUSD_MIN_ADX           = 25   # EURUSD requires stronger trend than default
 
 # Float precision tolerance for TP/SL comparisons.
