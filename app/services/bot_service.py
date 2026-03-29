@@ -1184,6 +1184,7 @@ async def _process_symbol(
                 symbol=symbol,
                 sl=assessment.stop_loss_price,
                 tp=assessment.take_profit_price,
+                candle_entry=float(assessment.entry_price),
             )
 
         log.info("ORDER CREATED — BUY filled", symbol=symbol, order_id=str(order.id))
@@ -1288,6 +1289,7 @@ async def _process_symbol(
                 symbol=symbol,
                 sl=assessment.stop_loss_price,
                 tp=assessment.take_profit_price,
+                candle_entry=float(assessment.entry_price),
             )
 
         log.info(
@@ -1328,8 +1330,16 @@ async def _set_position_levels(
     symbol: str,
     sl: Optional[float],
     tp: Optional[float],
+    candle_entry: Optional[float] = None,
 ) -> None:
-    """Update the most recently opened position for symbol with SL/TP prices."""
+    """Update the most recently opened position for symbol with SL/TP prices.
+
+    If candle_entry is provided, the TP/SL distances computed by risk_manager
+    are preserved but re-anchored to the position's actual avg_entry_price (the
+    live fill price).  This prevents the levels ending up on the wrong side of
+    the entry when the candle close price diverges from the live fill price
+    (e.g. TP above entry for a short, which would fire immediately as a loss).
+    """
     log.debug(
         "bot_service._set_position_levels: querying most-recent open position (LIMIT 1)",
         symbol=symbol,
@@ -1347,6 +1357,32 @@ async def _set_position_levels(
     )
     pos: Optional[Position] = result.scalar_one_or_none()
     if pos:
+        actual_fill = float(pos.avg_entry_price)
+
+        # Re-anchor TP/SL to the actual fill price when candle close diverged.
+        # risk_manager used candle_entry to compute distances; if the live fill
+        # landed at a different price the levels can end up on the wrong side.
+        if candle_entry is not None and abs(actual_fill - candle_entry) > 0.000001:
+            if pos.side == "short":
+                if sl is not None:
+                    sl = actual_fill + abs(float(sl) - candle_entry)   # SL above fill
+                if tp is not None:
+                    tp = actual_fill - abs(float(tp) - candle_entry)   # TP below fill
+            else:  # long
+                if sl is not None:
+                    sl = actual_fill - abs(float(sl) - candle_entry)   # SL below fill
+                if tp is not None:
+                    tp = actual_fill + abs(float(tp) - candle_entry)   # TP above fill
+            log.info(
+                "TP/SL re-anchored to fill price",
+                symbol=symbol,
+                side=pos.side,
+                candle_entry=round(candle_entry, 6),
+                fill_price=round(actual_fill, 6),
+                sl=round(sl, 6) if sl is not None else None,
+                tp=round(tp, 6) if tp is not None else None,
+            )
+
         if sl is not None:
             pos.stop_loss_price = Decimal(str(round(sl, 8)))
         if tp is not None:
