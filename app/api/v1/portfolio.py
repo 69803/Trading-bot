@@ -311,6 +311,38 @@ async def close_position(
 
 
 @router.delete(
+    "/positions",
+    status_code=status.HTTP_200_OK,
+    summary="Delete all closed position records for the current user",
+)
+async def delete_all_closed_positions(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Delete every closed position for the user. Open positions are untouched.
+    Adjusts portfolio.realized_pnl to stay consistent."""
+    portfolio = await _get_portfolio_or_404(current_user, db)
+
+    result = await db.execute(
+        select(Position).where(
+            Position.portfolio_id == portfolio.id,
+            Position.is_open == False,  # noqa: E712
+        )
+    )
+    positions = result.scalars().all()
+    count = len(positions)
+
+    for pos in positions:
+        if pos.realized_pnl:
+            portfolio.realized_pnl -= pos.realized_pnl
+        await db.delete(pos)
+
+    portfolio.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"deleted": count}
+
+
+@router.delete(
     "/positions/{position_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete a closed position record (cleanup only)",
