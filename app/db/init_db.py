@@ -98,4 +98,15 @@ async def init_db(session: AsyncSession) -> None:
 
     await _bootstrap_user(session, admin)
     await session.flush()
+
+    # One-time patch: remove BTCUSD from active strategy config for admin user.
+    # Idempotent — only fires while BTCUSD is still present in symbols.
+    sc_patch = await session.execute(
+        select(StrategyConfig).where(StrategyConfig.user_id == admin.id)
+    )
+    sc = sc_patch.scalars().first()
+    if sc is not None and "BTCUSD" in (sc.symbols or []):
+        sc.symbols = ["EURUSD"]
+        log.info("Patched admin symbols → ['EURUSD']", user_id=str(admin.id))
+
     log.info("Database seed complete")
