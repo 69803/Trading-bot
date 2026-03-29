@@ -102,6 +102,26 @@ async def get_order(
 
 
 @router.delete(
+    "",
+    summary="Delete all orders for the current user",
+)
+async def delete_all_orders(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    portfolio = await _get_portfolio_or_404(current_user, db)
+    result = await db.execute(
+        select(Order).where(Order.portfolio_id == portfolio.id)
+    )
+    orders = result.scalars().all()
+    count = len(orders)
+    for order in orders:
+        await db.delete(order)
+    await db.commit()
+    return {"deleted": count}
+
+
+@router.delete(
     "/{order_id}",
     response_model=OrderOut,
     summary="Cancel a pending order",
