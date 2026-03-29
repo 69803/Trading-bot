@@ -52,6 +52,7 @@ ATR_SL_MULT      = 2.0    # stop-loss = entry ± ATR × this
 ATR_TP_MULT      = 3.0    # take-profit = entry ± ATR × this
 MIN_RR_RATIO     = 1.5    # warn if risk/reward below this (not a hard reject)
 MIN_ATR_FRACTION = 0.0001 # ATR must be > entry × this to be considered valid
+MIN_SL_TP_DIST   = 0.00010 # minimum absolute distance from entry (~1 pip for EURUSD)
 
 # Volatility-adjusted sizing: reference ATR as fraction of price
 # If current ATR/price > VOLATILITY_REF_PCT, position size is scaled down
@@ -159,6 +160,29 @@ def assess(
     else:
         sl_price, tp_price, method = _pct_levels(
             direction, entry_price, risk_settings,
+        )
+
+    # Enforce minimum SL/TP distance — never allow near-entry levels
+    _min_dist = max(entry_price * MIN_ATR_FRACTION, MIN_SL_TP_DIST)
+    if sl_price is not None and abs(sl_price - entry_price) < _min_dist:
+        original_sl = sl_price
+        sl_price = (entry_price + _min_dist) if direction == "SELL" else (entry_price - _min_dist)
+        log.warning(
+            "SL too close to entry — enforced minimum distance",
+            symbol=symbol, method=method,
+            original_sl=round(original_sl, 8),
+            enforced_sl=round(sl_price, 8),
+            min_dist=round(_min_dist, 8),
+        )
+    if tp_price is not None and abs(tp_price - entry_price) < _min_dist:
+        original_tp = tp_price
+        tp_price = (entry_price - _min_dist) if direction == "SELL" else (entry_price + _min_dist)
+        log.warning(
+            "TP too close to entry — enforced minimum distance",
+            symbol=symbol, method=method,
+            original_tp=round(original_tp, 8),
+            enforced_tp=round(tp_price, 8),
+            min_dist=round(_min_dist, 8),
         )
 
     # ── 6. Risk-per-trade accounting (informational) ─────────────────────────
