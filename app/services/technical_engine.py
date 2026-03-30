@@ -59,8 +59,8 @@ log = get_logger(__name__)
 MIN_CANDLES = 60   # raised from 50: need enough history for ADX
 
 # Score thresholds — require multi-indicator confirmation
-BUY_THRESHOLD  =  10   # TESTING: lowered from 25 — easier to trigger BUY
-SELL_THRESHOLD = -10   # TESTING: raised from -25 — easier to trigger SELL
+BUY_THRESHOLD  =  25   # require multi-indicator confirmation
+SELL_THRESHOLD = -25   # require multi-indicator confirmation
 
 # EMA trend-clarity filters
 MIN_EMA_GAP_PCT      = 0.02   # min separation to count as a trend
