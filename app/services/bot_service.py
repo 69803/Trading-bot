@@ -1125,6 +1125,25 @@ async def _process_symbol(
 
         # Counter-signal: close the short before doing anything else
         if open_short:
+            _short_opened = open_short.opened_at
+            if _short_opened is not None and _short_opened.tzinfo is None:
+                _short_opened = _short_opened.replace(tzinfo=timezone.utc)
+            _short_held_s = (
+                (datetime.now(timezone.utc) - _short_opened).total_seconds()
+                if _short_opened else COOLDOWN_SECONDS
+            )
+            if _short_held_s < COOLDOWN_SECONDS:
+                log.info(
+                    "COUNTER-SIGNAL BLOCKED [min_hold]",
+                    symbol=symbol,
+                    side="short",
+                    held_s=int(_short_held_s),
+                    required_s=COOLDOWN_SECONDS,
+                )
+                return (
+                    f"COUNTER-SIGNAL BLOCKED [min_hold]: "
+                    f"held={int(_short_held_s)}s required={COOLDOWN_SECONDS}s"
+                ), False
             close_msg = await _close_position_directly(
                 db=db,
                 position=open_short,
@@ -1229,6 +1248,25 @@ async def _process_symbol(
             ), False
 
         if open_long:
+            _long_opened = open_long.opened_at
+            if _long_opened is not None and _long_opened.tzinfo is None:
+                _long_opened = _long_opened.replace(tzinfo=timezone.utc)
+            _long_held_s = (
+                (datetime.now(timezone.utc) - _long_opened).total_seconds()
+                if _long_opened else COOLDOWN_SECONDS
+            )
+            if _long_held_s < COOLDOWN_SECONDS:
+                log.info(
+                    "COUNTER-SIGNAL BLOCKED [min_hold]",
+                    symbol=symbol,
+                    side="long",
+                    held_s=int(_long_held_s),
+                    required_s=COOLDOWN_SECONDS,
+                )
+                return (
+                    f"COUNTER-SIGNAL BLOCKED [min_hold]: "
+                    f"held={int(_long_held_s)}s required={COOLDOWN_SECONDS}s"
+                ), False
             close_msg = await _close_position_directly(
                 db=db,
                 position=open_long,
