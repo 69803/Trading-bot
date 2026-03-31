@@ -271,9 +271,14 @@ class TwelveDataProvider(MarketDataProvider):
     All external calls run in asyncio.to_thread — event loop never blocked.
     """
 
-    # Cycle-level snapshot TTL: slightly shorter than the 60 s bot cycle so
-    # all calls within one cycle share the same price/candle snapshot.
+    # Price snapshot TTL: slightly shorter than the 60 s bot cycle so all
+    # calls within one cycle share the same live price (SL/TP detection).
     _SNAPSHOT_TTL = 55.0
+
+    # Candle snapshot TTL: 1h candles only change once per hour — no point
+    # re-fetching them every 60 s bot cycle.  3600 s caps API usage at
+    # ~24 candle calls/day per symbol instead of ~1440.
+    _CANDLE_SNAPSHOT_TTL = 3600.0
 
     def __init__(self, api_key: str) -> None:
         self._has_keys = bool(api_key)
@@ -358,12 +363,11 @@ class TwelveDataProvider(MarketDataProvider):
             log.info("MARKET DATA FETCH", source="TWELVEDATA_REAL",
                      symbol=symbol, price=round(price, 6))
         except Exception as exc:
-            log.warning("TwelveData get_current_price failed, using GBM fallback",
-                        symbol=symbol, error=str(exc))
-            # peek_price is non-mutating — GBM only advances via the scheduler.
-            price = self._fallback.peek_price(symbol)
-            log.warning("MARKET DATA FETCH", source="GBM_SIMULATION",
-                        symbol=symbol, price=round(price, 6))
+            log.error(
+                "MARKET DATA UNAVAILABLE — simulated price blocked (live mode)",
+                symbol=symbol, error=str(exc),
+            )
+            raise
 
         self._price_snapshot[symbol] = (price, now_mono)
         return price
@@ -424,7 +428,7 @@ class TwelveDataProvider(MarketDataProvider):
         cached_c = self._candle_snapshot.get(snap_key)
         if cached_c is not None:
             candles_c, ts_c = cached_c
-            if now_mono - ts_c < self._SNAPSHOT_TTL:
+            if now_mono - ts_c < self._CANDLE_SNAPSHOT_TTL:
                 log.debug("MARKET DATA CANDLES", source="CYCLE_SNAPSHOT",
                           symbol=symbol, timeframe=timeframe, limit=limit)
                 return candles_c
@@ -469,11 +473,11 @@ class TwelveDataProvider(MarketDataProvider):
             log.info("MARKET DATA CANDLES", source="TWELVEDATA_REAL",
                      symbol=symbol, timeframe=timeframe, count=len(candles))
         except Exception as exc:
-            log.warning("TwelveData get_candles failed, using GBM fallback",
-                        symbol=symbol, error=str(exc))
-            log.warning("MARKET DATA CANDLES", source="GBM_SIMULATION",
-                        symbol=symbol, timeframe=timeframe, limit=limit)
-            candles = self._fallback.candles(symbol, timeframe, limit)
+            log.error(
+                "MARKET DATA UNAVAILABLE — simulated candles blocked (live mode)",
+                symbol=symbol, error=str(exc),
+            )
+            raise
 
         self._candle_snapshot[snap_key] = (candles, now_mono)
         return candles

@@ -1123,40 +1123,14 @@ async def _process_symbol(
                 f"| tech={technical.direction} sentiment={sentiment.label}"
             ), False
 
-        # Counter-signal: close the short before doing anything else
+        # Counter-signal: short already open — let SL/TP manage the exit.
+        # Closing here uses candle-close price (not live) while entry paid
+        # 0.1% slippage, guaranteeing a loss equal to slippage cost every time.
         if open_short:
-            _short_opened = open_short.opened_at
-            if _short_opened is not None and _short_opened.tzinfo is None:
-                _short_opened = _short_opened.replace(tzinfo=timezone.utc)
-            _short_held_s = (
-                (datetime.now(timezone.utc) - _short_opened).total_seconds()
-                if _short_opened else COOLDOWN_SECONDS
-            )
-            if _short_held_s < COOLDOWN_SECONDS:
-                log.info(
-                    "COUNTER-SIGNAL BLOCKED [min_hold]",
-                    symbol=symbol,
-                    side="short",
-                    held_s=int(_short_held_s),
-                    required_s=COOLDOWN_SECONDS,
-                )
-                return (
-                    f"COUNTER-SIGNAL BLOCKED [min_hold]: "
-                    f"held={int(_short_held_s)}s required={COOLDOWN_SECONDS}s"
-                ), False
-            close_msg = await _close_position_directly(
-                db=db,
-                position=open_short,
-                portfolio=portfolio,
-                current_price=current_price,
-                reason=f"buy_signal_close_short | sentiment={sentiment.label}",
-            )
-            await log_decision(
-                db, user_id=user_id, portfolio_id=portfolio.id,
-                technical=technical, sentiment=sentiment, decision=decision,
-                assessment=assessment, executed=True,
-            )
-            return close_msg, False
+            return (
+                f"hold — short open @ {float(open_short.avg_entry_price):.5f}, "
+                f"waiting for SL/TP exit"
+            ), False
 
         log.info(
             "EXECUTING BUY",
@@ -1247,39 +1221,14 @@ async def _process_symbol(
                 f"| tech={technical.direction} sentiment={sentiment.label}"
             ), False
 
+        # Counter-signal: long already open — let SL/TP manage the exit.
+        # Closing here uses candle-close price (not live) while entry paid
+        # 0.1% slippage, guaranteeing a loss equal to slippage cost every time.
         if open_long:
-            _long_opened = open_long.opened_at
-            if _long_opened is not None and _long_opened.tzinfo is None:
-                _long_opened = _long_opened.replace(tzinfo=timezone.utc)
-            _long_held_s = (
-                (datetime.now(timezone.utc) - _long_opened).total_seconds()
-                if _long_opened else COOLDOWN_SECONDS
-            )
-            if _long_held_s < COOLDOWN_SECONDS:
-                log.info(
-                    "COUNTER-SIGNAL BLOCKED [min_hold]",
-                    symbol=symbol,
-                    side="long",
-                    held_s=int(_long_held_s),
-                    required_s=COOLDOWN_SECONDS,
-                )
-                return (
-                    f"COUNTER-SIGNAL BLOCKED [min_hold]: "
-                    f"held={int(_long_held_s)}s required={COOLDOWN_SECONDS}s"
-                ), False
-            close_msg = await _close_position_directly(
-                db=db,
-                position=open_long,
-                portfolio=portfolio,
-                current_price=current_price,
-                reason=f"sell_signal | sentiment={sentiment.label}",
-            )
-            await log_decision(
-                db, user_id=user_id, portfolio_id=portfolio.id,
-                technical=technical, sentiment=sentiment, decision=decision,
-                assessment=assessment, executed=True,
-            )
-            return close_msg, False
+            return (
+                f"hold — long open @ {float(open_long.avg_entry_price):.5f}, "
+                f"waiting for SL/TP exit"
+            ), False
 
         # No open position — open a short
         log.info(
@@ -1665,7 +1614,7 @@ async def _evaluate_open_positions(
     candle_wick_high: float = live_price  # symbol-level, used only for START log
     candle_wick_low:  float = live_price
     try:
-        recent_candles = await _market_data_router_for_candles.get_candles(symbol, "1h", limit=3)
+        recent_candles = await _market_data_router_for_candles.get_candles(symbol, "1h", limit=CANDLE_LIMIT)
         if recent_candles:
             candle_wick_high = max(float(c["high"]) for c in recent_candles)
             candle_wick_low  = min(float(c["low"])  for c in recent_candles)
@@ -1753,12 +1702,38 @@ async def _evaluate_open_positions(
         # 0.00001 away from the stored TP/SL (due to Decimal→float rounding or
         # GBM tick granularity) still triggers.  Close price is always the exact
         # TP/SL level, not tp+epsilon.
-        if pos.side == "long":
-            tp_hit_snapshot = tp is not None and effective_high >= tp - _TP_SL_EPSILON
-            sl_hit_snapshot = sl is not None and effective_low  <= sl + _TP_SL_EPSILON
-        else:  # short
-            tp_hit_snapshot = tp is not None and effective_low  <= tp + _TP_SL_EPSILON
-            sl_hit_snapshot = sl is not None and effective_high >= sl - _TP_SL_EPSILON
+        #
+        # Guard: skip snapshot on the FIRST evaluation cycle (prev is None).
+        # On the very first tick after open, effective_high/low is a single live
+        # price point — no price range has been observed yet.  A stale or GBM-
+        # drifted tick could immediately breach SL/TP before the position has
+        # had a chance to move.  Cross-detection (Method 2) is also skipped when
+        # prev is None, so the position is protected for the first full cycle.
+        if prev is None:
+            tp_hit_snapshot = False
+            sl_hit_snapshot = False
+            log.info(
+                "POSITION FIRST EVAL",
+                symbol=pos.symbol,
+                side=pos.side,
+                opened_at=pos.opened_at.isoformat() if pos.opened_at else None,
+                avg_entry_price=round(entry, 6),
+                prev_evaluated_price=None,
+                live_price=round(live_price, 6),
+                effective_high=round(effective_high, 6),
+                effective_low=round(effective_low, 6),
+                stop_loss_price=round(sl, 6) if sl is not None else None,
+                take_profit_price=round(tp, 6) if tp is not None else None,
+                tp_hit_snapshot=False,
+                sl_hit_snapshot=False,
+            )
+        else:
+            if pos.side == "long":
+                tp_hit_snapshot = tp is not None and effective_high >= tp - _TP_SL_EPSILON
+                sl_hit_snapshot = sl is not None and effective_low  <= sl + _TP_SL_EPSILON
+            else:  # short
+                tp_hit_snapshot = tp is not None and effective_low  <= tp + _TP_SL_EPSILON
+                sl_hit_snapshot = sl is not None and effective_high >= sl - _TP_SL_EPSILON
 
         # ── Method 2: Price-cross detection ──────────────────────────────────
         # Fires when price CROSSED the level between this cycle and the last one,
