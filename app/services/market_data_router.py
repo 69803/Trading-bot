@@ -174,10 +174,10 @@ def _create_router() -> MarketDataRouter:
     from app.core.config import settings
     from app.services.market_data_service import market_data_service as stock_provider
     from app.services.providers.twelvedata import TwelveDataProvider
-    from app.services.providers.binance import BinanceProvider
+    from app.services.providers.kucoin import KuCoinProvider
 
     fx_provider     = TwelveDataProvider(api_key=settings.TWELVE_DATA_API_KEY)
-    crypto_provider = BinanceProvider()
+    crypto_provider = KuCoinProvider()
 
     has_key = bool(settings.TWELVE_DATA_API_KEY)
     if has_key:
@@ -192,7 +192,7 @@ def _create_router() -> MarketDataRouter:
             api_key_loaded=False,
             TWELVEDATA_KEY_LOADED=False,
         )
-    log.info("CRYPTO DATA SOURCE: BINANCE (public API, no key required)")
+    log.info("CRYPTO DATA SOURCE: KUCOIN (public API, no key required, no geo-restrictions)")
     return MarketDataRouter(
         stock_provider=stock_provider,
         fx_provider=fx_provider,
