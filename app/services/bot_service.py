@@ -78,6 +78,31 @@ MIN_ATR_PCT              = 0.04 # minimum ATR as % of price (filters micro-range
 EURUSD_MIN_CONFIDENCE    = 40   # EURUSD requires higher confidence than default
 EURUSD_MIN_ADX           = 25   # EURUSD requires stronger trend than default
 
+# ── Adaptive profit-protection defaults ───────────────────────────────────────
+# Applied when risk_settings.break_even_trigger_pct == 0 or trailing_stop_pct == 0.
+# Values are fractions of the position's own TP distance from entry, so they
+# scale automatically with each asset's volatility.
+#
+# Example — ETHUSDT: entry=3000, TP=3180 (+6%)
+#   BE fires when gain ≥ 6% × 0.40 = 2.4%  →  price 3072
+#   Trailing trails at 6% × 0.35 = 2.1% below peak
+#   → If ETH spikes to 3150 and drops to 3084, trailing fires
+#
+# Example — EURUSD: entry=1.0800, TP=1.0920 (+1.11%)
+#   BE fires when gain ≥ 1.11% × 0.40 = 0.44%  →  price 1.0848
+#   Trailing trails at 1.11% × 0.35 = 0.39% below peak
+_BE_TRIGGER_TP_RATIO   = 0.40   # move SL to entry at 40% of TP distance
+_TRAILING_TP_RATIO     = 0.35   # trail stop at 35% of TP distance below peak
+_MIN_ADAPTIVE_PCT      = 0.001  # floor: never use < 0.1% (avoids instant trigger)
+
+# ── Signal-reversal exit ──────────────────────────────────────────────────────
+# Close a profitable position when the decision engine fully reverses direction.
+# DISABLED BY DEFAULT — backtest 2026-03-27 showed signal_exit fired on 490/491
+# trades and destroyed profitability.  Enable only with the strict TP threshold
+# below: position must be ≥ 60% of the way to TP before signal exit can fire.
+SIGNAL_EXIT_ON_REVERSAL    = False  # set True to enable
+SIGNAL_EXIT_MIN_TP_REACHED = 0.60   # must be ≥ 60% of TP distance in profit
+
 # Float precision tolerance for TP/SL comparisons.
 #
 # Root cause of missed closes: the GBM simulator (and real data providers)
@@ -1127,6 +1152,29 @@ async def _process_symbol(
         # Closing here uses candle-close price (not live) while entry paid
         # 0.1% slippage, guaranteeing a loss equal to slippage cost every time.
         if open_short:
+            # Signal-reversal exit (disabled by default — see SIGNAL_EXIT_ON_REVERSAL)
+            if SIGNAL_EXIT_ON_REVERSAL and open_short.take_profit_price:
+                _os_entry      = float(open_short.avg_entry_price)
+                _os_tp         = float(open_short.take_profit_price)
+                _os_profit_pct  = (_os_entry - current_price) / _os_entry if _os_entry > 0 else 0.0
+                _os_tp_dist_pct = (_os_entry - _os_tp)        / _os_entry if _os_entry > 0 else 0.0
+                if _os_tp_dist_pct > 0 and _os_profit_pct >= _os_tp_dist_pct * SIGNAL_EXIT_MIN_TP_REACHED:
+                    _srx_msg = await _close_position_directly(
+                        db=db,
+                        position=open_short,
+                        portfolio=portfolio,
+                        current_price=current_price,
+                        reason=f"signal_reversal_exit profit={_os_profit_pct:.2%}",
+                    )
+                    log.info(
+                        "SIGNAL-REVERSAL EXIT: short closed on BUY signal",
+                        symbol=symbol,
+                        profit_pct=round(_os_profit_pct * 100, 3),
+                        tp_reached_pct=round(_os_profit_pct / _os_tp_dist_pct * 100, 1),
+                        entry=round(_os_entry, 6),
+                        close_price=round(current_price, 6),
+                    )
+                    return _srx_msg, False
             return (
                 f"hold — short open @ {float(open_short.avg_entry_price):.5f}, "
                 f"waiting for SL/TP exit"
@@ -1225,6 +1273,29 @@ async def _process_symbol(
         # Closing here uses candle-close price (not live) while entry paid
         # 0.1% slippage, guaranteeing a loss equal to slippage cost every time.
         if open_long:
+            # Signal-reversal exit (disabled by default — see SIGNAL_EXIT_ON_REVERSAL)
+            if SIGNAL_EXIT_ON_REVERSAL and open_long.take_profit_price:
+                _ol_entry      = float(open_long.avg_entry_price)
+                _ol_tp         = float(open_long.take_profit_price)
+                _ol_profit_pct  = (current_price - _ol_entry) / _ol_entry if _ol_entry > 0 else 0.0
+                _ol_tp_dist_pct = (_ol_tp - _ol_entry)        / _ol_entry if _ol_entry > 0 else 0.0
+                if _ol_tp_dist_pct > 0 and _ol_profit_pct >= _ol_tp_dist_pct * SIGNAL_EXIT_MIN_TP_REACHED:
+                    _srx_msg = await _close_position_directly(
+                        db=db,
+                        position=open_long,
+                        portfolio=portfolio,
+                        current_price=current_price,
+                        reason=f"signal_reversal_exit profit={_ol_profit_pct:.2%}",
+                    )
+                    log.info(
+                        "SIGNAL-REVERSAL EXIT: long closed on SELL signal",
+                        symbol=symbol,
+                        profit_pct=round(_ol_profit_pct * 100, 3),
+                        tp_reached_pct=round(_ol_profit_pct / _ol_tp_dist_pct * 100, 1),
+                        entry=round(_ol_entry, 6),
+                        close_price=round(current_price, 6),
+                    )
+                    return _srx_msg, False
             return (
                 f"hold — long open @ {float(open_long.avg_entry_price):.5f}, "
                 f"waiting for SL/TP exit"
@@ -1857,15 +1928,36 @@ async def _evaluate_open_positions(
         # closes the position or not.
         pos.prev_evaluated_price = Decimal(str(live_price))
 
+        # ── Compute effective BE / trailing values ────────────────────────────
+        # When risk_settings has these at 0 (disabled), derive sensible values
+        # from the position's own TP distance so they scale with volatility.
+        _eff_be    = be_trigger
+        _eff_trail = trailing_pct
+        if tp is not None and entry > 0:
+            _tp_dist_pct = abs(tp - entry) / entry
+            if _eff_be <= 0:
+                _eff_be = max(_tp_dist_pct * _BE_TRIGGER_TP_RATIO, _MIN_ADAPTIVE_PCT)
+            if _eff_trail <= 0:
+                _eff_trail = max(_tp_dist_pct * _TRAILING_TP_RATIO, _MIN_ADAPTIVE_PCT)
+
         # 1. Break-even: move SL to entry when unrealised gain threshold is met
-        if be_trigger > 0 and close_price is None:
-            activated = check_break_even(pos, live_price, be_trigger)
+        if _eff_be > 0 and close_price is None:
+            activated = check_break_even(pos, live_price, _eff_be)
             if activated:
+                log.info(
+                    "BREAK-EVEN ACTIVATED",
+                    symbol=symbol,
+                    side=pos.side,
+                    be_trigger_pct=round(_eff_be * 100, 3),
+                    live_price=round(live_price, 6),
+                    entry=round(entry, 6),
+                    source="adaptive_tp_ratio" if be_trigger <= 0 else "risk_settings",
+                )
                 await db.flush()
 
         # 2. Trailing stop: update level and check for trigger
-        if trailing_pct > 0 and close_price is None:
-            trail_triggered = update_trailing_stop(pos, live_price, trailing_pct)
+        if _eff_trail > 0 and close_price is None:
+            trail_triggered = update_trailing_stop(pos, live_price, _eff_trail)
             if trail_triggered:
                 msg = await _close_position_directly(
                     db=db,
@@ -1880,6 +1972,7 @@ async def _evaluate_open_positions(
                     symbol=symbol,
                     position_id=str(pos.id),
                     reason="trailing_stop",
+                    trail_pct=round(_eff_trail * 100, 3),
                     close_price=round(live_price, 6),
                     close_msg=msg,
                 )
