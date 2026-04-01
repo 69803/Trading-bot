@@ -59,8 +59,8 @@ log = get_logger(__name__)
 MIN_CANDLES = 60   # raised from 50: need enough history for ADX
 
 # Score thresholds — require multi-indicator confirmation
-BUY_THRESHOLD  =  25   # require multi-indicator confirmation
-SELL_THRESHOLD = -25   # require multi-indicator confirmation
+BUY_THRESHOLD  =  20   # require multi-indicator confirmation
+SELL_THRESHOLD = -20   # require multi-indicator confirmation
 
 # EMA trend-clarity filters
 MIN_EMA_GAP_PCT      = 0.02   # min separation to count as a trend
@@ -71,7 +71,7 @@ MAX_RECENT_CROSSOVERS = 3     # choppy if more than 3 reversals
 # ADX_SIDEWAYS lowered to 15: EURUSD on 1h regularly trades at ADX 12-18 even
 # during genuine directional moves. ADX=20 was blocking every non-trending hour.
 ADX_PERIOD    = 14
-ADX_SIDEWAYS  = 15   # below this + no fresh crossover → skip (sideways market)
+ADX_SIDEWAYS  = 12   # below this + no fresh crossover → skip (sideways market)
 ADX_MODERATE  = 25   # moderate trend — normal trading
 ADX_STRONG    = 35   # strong trend — high-confidence entries
 
@@ -354,11 +354,11 @@ def analyze(
         score += 5
         reason_str = f"RSI {rsi:.1f} — neutral-bullish (mild BUY lean)"
         rsi_pts = 5
-    elif rsi <= 65:
-        score -= 5
-        reason_str = f"RSI {rsi:.1f} — neutral-bearish (mild SELL lean)"
-        rsi_pts = -5
     elif rsi <= 70:
+        score += 0
+        reason_str = f"RSI {rsi:.1f} — neutral (healthy momentum, no penalty)"
+        rsi_pts = 0
+    elif rsi <= 75:
         score -= 10
         reason_str = f"RSI {rsi:.1f} — overbought (SELL confirmation)"
         rsi_extreme = "overbought"
