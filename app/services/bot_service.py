@@ -69,8 +69,8 @@ log = get_logger(__name__)
 CANDLE_LIMIT = 250              # enough for EMA-200 warm-up
 
 # ── Entry quality thresholds ──────────────────────────────────────────────────
-MIN_CONFIDENCE_THRESHOLD = 40   # minimum decision confidence to open any trade (0-100)
-MIN_ADX_FOR_ENTRY        = 20   # minimum ADX to confirm a trend exists
+MIN_CONFIDENCE_THRESHOLD = 35   # minimum decision confidence to open any trade (0-100)
+MIN_ADX_FOR_ENTRY        = 15   # minimum ADX to confirm a trend exists
 COOLDOWN_SECONDS         = 900  # minimum seconds between trades on the same symbol (15 min)
 MIN_ATR_PCT              = 0.04 # minimum ATR as % of price (filters micro-range setups)
 
