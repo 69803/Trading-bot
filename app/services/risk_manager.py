@@ -303,12 +303,18 @@ def update_trailing_stop(
         old_trail = position.trailing_stop_price
         if old_trail is None or new_trail > old_trail:
             position.trailing_stop_price = new_trail
-        # Trigger?
-        if price <= position.trailing_stop_price:
+        # Trigger only when trailing level is AT OR ABOVE entry price.
+        # This prevents closing at a loss when price never moved into profit:
+        # if HWM == entry, trail = entry×(1−pct) < entry → do NOT fire, let SL handle it.
+        if (
+            price <= position.trailing_stop_price
+            and position.trailing_stop_price >= position.avg_entry_price
+        ):
             log.info(
                 "Trailing stop triggered",
                 symbol=position.symbol, side="long",
                 price=float(price), trail_stop=float(position.trailing_stop_price),
+                entry=float(position.avg_entry_price),
             )
             return True
 
@@ -321,11 +327,16 @@ def update_trailing_stop(
         old_trail = position.trailing_stop_price
         if old_trail is None or new_trail < old_trail:
             position.trailing_stop_price = new_trail
-        if price >= position.trailing_stop_price:
+        # Trigger only when trailing level is AT OR BELOW entry price.
+        if (
+            price >= position.trailing_stop_price
+            and position.trailing_stop_price <= position.avg_entry_price
+        ):
             log.info(
                 "Trailing stop triggered",
                 symbol=position.symbol, side="short",
                 price=float(price), trail_stop=float(position.trailing_stop_price),
+                entry=float(position.avg_entry_price),
             )
             return True
 
