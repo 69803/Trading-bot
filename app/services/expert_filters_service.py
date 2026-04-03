@@ -138,6 +138,12 @@ def _check_volatility(atr: float, symbol: str) -> Optional[ExpertFilterResult]:
 # Filter C — Trend (EMA200 alignment)
 # ---------------------------------------------------------------------------
 
+_CRYPTO_SPOT_SYMBOLS: frozenset[str] = frozenset({
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT",
+    "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
+})
+
+
 def _check_trend(
     price: float,
     candles: List[dict],
@@ -145,9 +151,15 @@ def _check_trend(
     symbol: str,
 ) -> Optional[ExpertFilterResult]:
     """SKIP when trade direction contradicts the long-term EMA trend.
-    BUY only if price > EMA200; SELL only if price < EMA200."""
+    BUY only if price > EMA200; SELL only if price < EMA200.
+    Disabled for crypto spot pairs — they trade 24/7 without directional
+    session bias, and in ranging markets this filter blocks both directions."""
     if direction not in ("BUY", "SELL"):
         return None   # HOLD — nothing to check
+
+    if symbol.upper() in _CRYPTO_SPOT_SYMBOLS:
+        log.debug("Expert trend filter: PASS (crypto — EMA200 check skipped)", symbol=symbol)
+        return None
 
     closes = [float(c["close"]) for c in candles if c.get("close") is not None]
     ema200 = _compute_ema(closes, settings.EXPERT_TREND_EMA_PERIOD)

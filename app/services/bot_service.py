@@ -1565,15 +1565,29 @@ def _neutral_sentiment(symbol: str) -> SentimentResult:
     )
 
 
+_CRYPTO_SPOT_SYMBOLS: frozenset[str] = frozenset({
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT",
+    "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
+})
+
+
 def _symbol_currencies(symbol: str) -> set:
     """
     Extract the two currency codes from a forex symbol.
+
+    Crypto spot pairs (BTCUSDT, ETHUSDT, …) return an empty set so that
+    the economic-calendar filter never fires on them — crypto is a 24/7
+    market and is not meaningfully gated by USD macro events (FOMC, NFP…)
+    the same way EURUSD is.
 
     Examples:
         "EURUSD"  → {"EUR", "USD"}
         "EUR/USD" → {"EUR", "USD"}
         "XAUUSD"  → {"XAU", "USD"}
+        "BTCUSDT" → set()   ← bypasses calendar filter
     """
+    if symbol.upper() in _CRYPTO_SPOT_SYMBOLS:
+        return set()
     clean = symbol.upper().replace("/", "").replace("_", "").replace("-", "")
     if len(clean) >= 6:
         return {clean[:3], clean[3:6]}
