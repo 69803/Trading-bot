@@ -1,6 +1,8 @@
 import os
+import ssl
 from collections.abc import AsyncGenerator
 from typing import Optional, TypeAlias
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import (
@@ -17,6 +19,20 @@ from app.core.config import settings
 
 _DB_URL: Optional[str] = os.environ.get("DATABASE_URL")
 
+# asyncpg does not accept `sslmode` as a URL query param (libpq-only).
+# Strip it out and, if SSL was requested or the host is Supabase, pass
+# ssl=True via connect_args instead.
+_connect_args: dict = {}
+if _DB_URL and _DB_URL.startswith("postgresql+asyncpg"):
+    _parsed = urlparse(_DB_URL)
+    _qs = parse_qs(_parsed.query, keep_blank_values=True)
+    _ssl_requested = "sslmode" in _qs
+    _qs.pop("sslmode", None)
+    _DB_URL = urlunparse(_parsed._replace(query=urlencode(_qs, doseq=True)))
+    if _ssl_requested or (_parsed.hostname and "supabase" in _parsed.hostname):
+        _ssl_ctx = ssl.create_default_context()
+        _connect_args["ssl"] = _ssl_ctx
+
 if _DB_URL:
     engine = create_async_engine(
         _DB_URL,
@@ -24,6 +40,7 @@ if _DB_URL:
         pool_size=10,
         max_overflow=20,
         pool_pre_ping=True,
+        connect_args=_connect_args,
     )
     AsyncSessionFactory: Optional[async_sessionmaker[_AsyncSession]] = async_sessionmaker(
         bind=engine,
