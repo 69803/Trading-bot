@@ -100,16 +100,13 @@ async def run_async_migrations() -> None:
     _url = config.get_main_option("sqlalchemy.url") or ""
     from urllib.parse import urlparse as _urlparse
     _host = _urlparse(_url).hostname or ""
-    _is_pooler = "pooler.supabase.com" in _host
-    _connect_args = {"statement_cache_size": 0} if _is_pooler else {}
-    _exec_opts = {"compiled_cache": None} if _is_pooler else {}
+    _connect_args = {"statement_cache_size": 0} if "pooler.supabase.com" in _host else {}
 
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
         connect_args=_connect_args,
-        execution_options=_exec_opts,
     )
 
     async with connectable.connect() as connection:
