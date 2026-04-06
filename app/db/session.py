@@ -38,9 +38,9 @@ if _DB_URL and _DB_URL.startswith("postgresql+asyncpg"):
     _DB_URL = urlunparse(_parsed._replace(query=urlencode(_qs, doseq=True)))
     _host = _parsed.hostname or ""
     if "pooler.supabase.com" in _host:
-        # Pooler uses self-signed cert — skip custom SSLContext entirely;
-        # asyncpg will still use TLS but won't fail on cert verification.
-        pass
+        # Pooler (PgBouncer) uses a self-signed cert and does not support
+        # prepared statements — disable the asyncpg statement cache.
+        _connect_args["statement_cache_size"] = 0
     elif _ssl_requested or "supabase" in _host:
         _connect_args["ssl"] = ssl.create_default_context()
 
