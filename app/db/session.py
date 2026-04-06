@@ -20,8 +20,15 @@ from app.core.config import settings
 _DB_URL: Optional[str] = os.environ.get("DATABASE_URL")
 
 # asyncpg does not accept `sslmode` as a URL query param (libpq-only).
-# Strip it out and, if SSL was requested or the host is Supabase, pass
-# ssl=True via connect_args instead.
+# Strip it out, then decide SSL strategy based on the host:
+#
+#   pooler.supabase.com  — transaction/session pooler (PgBouncer).
+#                          Uses a self-signed cert chain; pass no custom
+#                          SSLContext so asyncpg negotiates TLS natively
+#                          without certificate verification.
+#
+#   *.supabase.co        — direct connection. Pass a default SSLContext
+#                          (full CA verification).
 _connect_args: dict = {}
 if _DB_URL and _DB_URL.startswith("postgresql+asyncpg"):
     _parsed = urlparse(_DB_URL)
@@ -29,9 +36,13 @@ if _DB_URL and _DB_URL.startswith("postgresql+asyncpg"):
     _ssl_requested = "sslmode" in _qs
     _qs.pop("sslmode", None)
     _DB_URL = urlunparse(_parsed._replace(query=urlencode(_qs, doseq=True)))
-    if _ssl_requested or (_parsed.hostname and "supabase" in _parsed.hostname):
-        _ssl_ctx = ssl.create_default_context()
-        _connect_args["ssl"] = _ssl_ctx
+    _host = _parsed.hostname or ""
+    if "pooler.supabase.com" in _host:
+        # Pooler uses self-signed cert — skip custom SSLContext entirely;
+        # asyncpg will still use TLS but won't fail on cert verification.
+        pass
+    elif _ssl_requested or "supabase" in _host:
+        _connect_args["ssl"] = ssl.create_default_context()
 
 if _DB_URL:
     engine = create_async_engine(
