@@ -12,9 +12,7 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: trading-db
-          property: connectionString
+        sync: false   # set manually in Render dashboard (Supabase pooler URL)
       - key: SECRET_KEY
         generateValue: true
       - key: FRONTEND_URL
@@ -34,9 +32,3 @@ services:
       - key: REFRESH_TOKEN_EXPIRE_DAYS
         value: "30"
 
-databases:
-  - name: trading-db
-    databaseName: tradingdb
-    user: trader
-    region: oregon
-    plan: free

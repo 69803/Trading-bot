@@ -95,10 +95,18 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """Create an async engine and run migrations within an async context."""
+    # PgBouncer (Supabase transaction pooler) does not support prepared
+    # statements — disable the asyncpg statement cache for pooler hosts.
+    _url = config.get_main_option("sqlalchemy.url") or ""
+    from urllib.parse import urlparse as _urlparse
+    _host = _urlparse(_url).hostname or ""
+    _connect_args = {"statement_cache_size": 0} if "pooler.supabase.com" in _host else {}
+
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=_connect_args,
     )
 
     async with connectable.connect() as connection:
