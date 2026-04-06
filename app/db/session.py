@@ -38,11 +38,15 @@ if _DB_URL and _DB_URL.startswith("postgresql+asyncpg"):
     _DB_URL = urlunparse(_parsed._replace(query=urlencode(_qs, doseq=True)))
     _host = _parsed.hostname or ""
     if "pooler.supabase.com" in _host:
-        # Pooler (PgBouncer) uses a self-signed cert and does not support
-        # prepared statements — disable the asyncpg statement cache.
+        # PgBouncer in transaction mode does not support prepared statements.
+        # Disable at both the asyncpg level (statement_cache_size) and the
+        # SQLAlchemy level (compiled_cache) to prevent DuplicatePreparedStatement
+        # errors when PgBouncer routes requests across different backend connections.
         _connect_args["statement_cache_size"] = 0
     elif _ssl_requested or "supabase" in _host:
         _connect_args["ssl"] = ssl.create_default_context()
+
+_is_pooler = "pooler.supabase.com" in (_DB_URL or "")
 
 if _DB_URL:
     engine = create_async_engine(
@@ -52,6 +56,9 @@ if _DB_URL:
         max_overflow=20,
         pool_pre_ping=True,
         connect_args=_connect_args,
+        # Disable SQLAlchemy's compiled query cache for PgBouncer — it emits
+        # PREPARE statements independently of asyncpg's own cache.
+        execution_options={"compiled_cache": None} if _is_pooler else {},
     )
     AsyncSessionFactory: Optional[async_sessionmaker[_AsyncSession]] = async_sessionmaker(
         bind=engine,
