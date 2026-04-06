@@ -21,11 +21,6 @@ log = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: seed DB on startup, dispose engine on shutdown."""
     log.info("Starting up", environment=settings.ENVIRONMENT)
-    if engine is not None:
-        from app.db.base import Base
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        log.info("Database tables created / verified")
 
     if AsyncSessionFactory is not None:
         async with AsyncSessionFactory() as session:
