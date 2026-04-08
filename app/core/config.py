@@ -5,7 +5,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://trader:trader123@localhost:5432/tradingdb"
     SECRET_KEY: str = "dev-secret-key-change-in-production"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 43200  # 30 days — never expires mid-session
     ENVIRONMENT: str = "development"
     INITIAL_BALANCE: float = 10000.0
     ALGORITHM: str = "HS256"
