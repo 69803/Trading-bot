@@ -318,6 +318,89 @@ def calculate_volume_ratio(volumes: List[float], period: int = 20) -> float:
     return float(current / avg)
 
 
+def calculate_bollinger_bands(
+    prices: List[float],
+    period: int = 20,
+    num_std: float = 2.0,
+) -> Tuple[List[float], List[float], List[float]]:
+    """Calculate Bollinger Bands (upper, middle/SMA, lower).
+
+    Args:
+        prices:   Closing prices (oldest first).
+        period:   Look-back period for SMA and std (default 20).
+        num_std:  Number of standard deviations (default 2.0).
+
+    Returns:
+        Tuple (upper, middle, lower) — each a list the same length as prices.
+        Values before index period-1 are NaN.
+    """
+    arr    = np.array(prices, dtype=float)
+    n      = len(arr)
+    upper  = np.full(n, np.nan)
+    middle = np.full(n, np.nan)
+    lower  = np.full(n, np.nan)
+
+    for i in range(period - 1, n):
+        window     = arr[i - period + 1 : i + 1]
+        sma        = window.mean()
+        std        = window.std(ddof=0)          # population std, like most platforms
+        middle[i]  = sma
+        upper[i]   = sma + num_std * std
+        lower[i]   = sma - num_std * std
+
+    return upper.tolist(), middle.tolist(), lower.tolist()
+
+
+def calculate_stochastic(
+    highs:  List[float],
+    lows:   List[float],
+    closes: List[float],
+    k_period: int = 5,
+    d_period: int = 3,
+    smooth_k: int = 3,
+) -> Tuple[List[float], List[float]]:
+    """Calculate Stochastic Oscillator (%K smoothed, %D).
+
+    Args:
+        highs:    High prices (oldest first).
+        lows:     Low prices (oldest first).
+        closes:   Close prices (oldest first).
+        k_period: Raw %K look-back (default 5).
+        d_period: %D smoothing period (default 3).
+        smooth_k: %K smoothing period (default 3).
+
+    Returns:
+        Tuple (k_smooth, d) — each a list the same length as closes.
+        Values before enough history are NaN.
+    """
+    n      = len(closes)
+    raw_k  = np.full(n, np.nan)
+
+    for i in range(k_period - 1, n):
+        h_max = max(highs[i - k_period + 1 : i + 1])
+        l_min = min(lows[i  - k_period + 1 : i + 1])
+        denom = h_max - l_min
+        raw_k[i] = 100.0 * (closes[i] - l_min) / denom if denom != 0 else 50.0
+
+    # Smooth %K with simple moving average of smooth_k
+    k_smooth = np.full(n, np.nan)
+    for i in range(k_period - 1 + smooth_k - 1, n):
+        window = raw_k[i - smooth_k + 1 : i + 1]
+        if not np.any(np.isnan(window)):
+            k_smooth[i] = window.mean()
+
+    # %D = SMA(d_period) of smoothed %K
+    d = np.full(n, np.nan)
+    for i in range(len(k_smooth)):
+        if i < d_period - 1:
+            continue
+        window = k_smooth[i - d_period + 1 : i + 1]
+        if not np.any(np.isnan(window)):
+            d[i] = window.mean()
+
+    return k_smooth.tolist(), d.tolist()
+
+
 def calculate_signals(
     closes: List[float],
     ema_fast_period: int = 50,

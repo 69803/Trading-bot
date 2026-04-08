@@ -348,6 +348,61 @@ async def activate_trendmaster(
     }
 
 
+# ── POST /activate/scalperx ───────────────────────────────────────────────────
+
+@router.post("/activate/scalperx", summary="Configure and start the ScalperX Mean Reversion bot")
+async def activate_scalperx(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    One-shot: configures Mean Reversion params (BB 20, Stoch 5/3/3, ADX gate)
+    and starts the bot.
+    Detection signature: ema_fast=20, ema_slow=5
+    """
+    config = await _get_or_create_strategy(current_user, db)
+    risk   = await _get_or_create_risk(current_user, db)
+
+    # Strategy params (ScalperX signature: ema_fast=20, ema_slow=5)
+    config.ema_fast              = 20   # BB period
+    config.ema_slow              = 5    # Stochastic K period
+    config.rsi_period            = 14
+    config.rsi_overbought        = Decimal("70")
+    config.rsi_oversold          = Decimal("30")
+    config.symbols               = ["EUR/USD", "EUR/GBP", "USD/CHF", "AUD/NZD"]
+    config.asset_classes         = ["forex"]
+    config.investment_amount     = Decimal("200")
+    config.run_interval_seconds  = 900   # 15 min — matches signal timeframe
+    config.per_symbol_max_positions = 1
+    config.allow_buy             = True
+    config.allow_sell            = True
+    config.cooldown_seconds      = 1800  # 30 min cooldown between trades per symbol
+
+    # Risk params
+    risk.stop_loss_pct           = Decimal("0.02")   # fallback
+    risk.take_profit_pct         = Decimal("0.03")   # fallback
+    risk.max_open_positions      = 4
+    risk.max_daily_loss_pct      = Decimal("0.03")   # 3% daily drawdown
+    risk.max_position_size_pct   = Decimal("0.10")
+
+    # Start
+    state = await _get_or_create_bot_state(current_user, db)
+    state.is_running  = True
+    state.started_at  = datetime.now(timezone.utc)
+    state.last_log    = "ScalperX activated — Mean Reversion on EUR/USD, EUR/GBP, USD/CHF, AUD/NZD"
+    if hasattr(state, "last_error"):
+        state.last_error = None
+
+    await db.commit()
+    return {
+        "message":   "ScalperX activated",
+        "strategy":  "scalperx",
+        "symbols":   list(config.symbols),
+        "timeframe": "15m",
+        "is_running": True,
+    }
+
+
 # ── POST /stop ────────────────────────────────────────────────────────────────
 
 @router.post("/stop", summary="Stop the auto-trading bot")
