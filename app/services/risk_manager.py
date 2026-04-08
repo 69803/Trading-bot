@@ -71,6 +71,8 @@ def assess(
     open_positions_count: int,
     risk_settings: RiskSettings,
     invest_amount: float,
+    atr_sl_mult: Optional[float] = None,
+    atr_tp_mult: Optional[float] = None,
 ) -> RiskAssessment:
     """
     Evaluate a FinalDecision against current portfolio state and risk rules.
@@ -156,6 +158,8 @@ def assess(
     if atr_valid:
         sl_price, tp_price, method = _atr_levels(
             direction, entry_price, atr_value,
+            sl_mult=atr_sl_mult if atr_sl_mult is not None else ATR_SL_MULT,
+            tp_mult=atr_tp_mult if atr_tp_mult is not None else ATR_TP_MULT,
         )
     else:
         sl_price, tp_price, method = _pct_levels(
@@ -230,10 +234,12 @@ def _atr_levels(
     direction: str,
     entry: float,
     atr: float,
+    sl_mult: float = ATR_SL_MULT,
+    tp_mult: float = ATR_TP_MULT,
 ) -> tuple[float, float, str]:
     """Compute SL and TP using ATR multiples."""
-    sl_dist = atr * ATR_SL_MULT
-    tp_dist = atr * ATR_TP_MULT
+    sl_dist = atr * sl_mult
+    tp_dist = atr * tp_mult
     if direction == "BUY":
         return entry - sl_dist, entry + tp_dist, "atr_based"
     else:  # SELL

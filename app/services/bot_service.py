@@ -40,6 +40,7 @@ from app.core.config import settings
 from app.schemas.sentiment import SentimentResult
 from app.services import order_service
 from app.services import decision_engine, risk_manager, sentiment_engine, technical_engine
+from app.services.strategies import trendmaster_engine
 from app.services.analytics_service import (
     count_consecutive_losses,
     count_trades_last_hour,
@@ -676,7 +677,10 @@ async def _process_symbol(
         return f"SKIPPED [{pre.filter_name}]: {pre.reason}", False
 
     # ── Phase 2: Technical analysis ──────────────────────────────────────────
-    candles = await _market_data_router_for_candles.get_candles(symbol, "1h", limit=CANDLE_LIMIT)
+    # TrendMaster strategy: detected when ema_fast=9, ema_slow=21
+    _is_trendmaster = (int(config.ema_fast) == 9 and int(config.ema_slow) == 21)
+    _timeframe = "5m" if _is_trendmaster else "1h"
+    candles = await _market_data_router_for_candles.get_candles(symbol, _timeframe, limit=CANDLE_LIMIT)
     if not candles:
         return "no candle data", False
 
@@ -725,16 +729,27 @@ async def _process_symbol(
         )
         return f"SKIPPED: stale candle data ({_age_min:.0f}min old)", False
 
-    technical = technical_engine.analyze(
-        symbol=symbol,
-        candles=candles,
-        timeframe="1h",
-        ema_fast_period=int(config.ema_fast),
-        ema_slow_period=int(config.ema_slow),
-        rsi_period=int(config.rsi_period),
-        rsi_overbought=float(config.rsi_overbought),
-        rsi_oversold=float(config.rsi_oversold),
-    )
+    if _is_trendmaster:
+        technical = trendmaster_engine.analyze(
+            symbol=symbol,
+            candles=candles,
+            timeframe="5m",
+        )
+        _atr_sl_mult = trendmaster_engine.ATR_SL_MULT
+        _atr_tp_mult = trendmaster_engine.ATR_TP_MULT
+    else:
+        technical = technical_engine.analyze(
+            symbol=symbol,
+            candles=candles,
+            timeframe="1h",
+            ema_fast_period=int(config.ema_fast),
+            ema_slow_period=int(config.ema_slow),
+            rsi_period=int(config.rsi_period),
+            rsi_overbought=float(config.rsi_overbought),
+            rsi_oversold=float(config.rsi_oversold),
+        )
+        _atr_sl_mult = None
+        _atr_tp_mult = None
 
     # ── Guard: insufficient data — return before logging any indicator values ──
     if technical.hold_reason and "insufficient_data" in technical.hold_reason:
@@ -1068,6 +1083,8 @@ async def _process_symbol(
         open_positions_count = total_open_positions,
         risk_settings        = risk,
         invest_amount        = invest_amount,
+        atr_sl_mult          = _atr_sl_mult,
+        atr_tp_mult          = _atr_tp_mult,
     )
 
     log.info(

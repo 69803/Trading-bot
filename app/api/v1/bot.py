@@ -292,6 +292,62 @@ async def clear_bot_logs(
     return {"cleared": True}
 
 
+# ── POST /activate/trendmaster ────────────────────────────────────────────────
+
+@router.post("/activate/trendmaster", summary="Configure and start the TrendMaster bot")
+async def activate_trendmaster(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    One-shot endpoint:
+      1. Configures strategy with TrendMaster parameters (EMA 9/21, forex pairs, 5m)
+      2. Configures risk: SL=ATR×1.5, TP=ATR×3.0, 1% max risk per trade
+      3. Starts the bot
+    """
+    config = await _get_or_create_strategy(current_user, db)
+    risk   = await _get_or_create_risk(current_user, db)
+
+    # ── Strategy params (TrendMaster signature: ema_fast=9, ema_slow=21) ──────
+    config.ema_fast              = 9
+    config.ema_slow              = 21
+    config.rsi_period            = 14
+    config.rsi_overbought        = Decimal("75")
+    config.rsi_oversold          = Decimal("45")
+    config.symbols               = ["EUR/USD", "GBP/USD", "USD/CHF", "AUD/USD"]
+    config.asset_classes         = ["forex"]
+    config.investment_amount     = Decimal("200")
+    config.run_interval_seconds  = 300   # 5 minutes — matches scalping timeframe
+    config.per_symbol_max_positions = 1
+    config.allow_buy             = True
+    config.allow_sell            = True
+    config.cooldown_seconds      = 900  # 15 min between trades per symbol
+
+    # ── Risk params (1% per trade, ATR-based SL/TP) ───────────────────────────
+    risk.stop_loss_pct           = Decimal("0.015")   # fallback when ATR unavailable
+    risk.take_profit_pct         = Decimal("0.03")    # fallback
+    risk.max_open_positions      = 4
+    risk.max_daily_loss_pct      = Decimal("0.03")    # 3% daily drawdown limit
+    risk.max_position_size_pct   = Decimal("0.10")    # max 10% equity per trade
+
+    # ── Start the bot ─────────────────────────────────────────────────────────
+    state = await _get_or_create_bot_state(current_user, db)
+    state.is_running  = True
+    state.started_at  = datetime.now(timezone.utc)
+    state.last_log    = "TrendMaster activated — monitoring EUR/USD, GBP/USD, USD/CHF, AUD/USD"
+    if hasattr(state, "last_error"):
+        state.last_error = None
+
+    await db.commit()
+    return {
+        "message":    "TrendMaster activated",
+        "strategy":   "trendmaster",
+        "symbols":    list(config.symbols),
+        "timeframe":  "5m",
+        "is_running": True,
+    }
+
+
 # ── POST /stop ────────────────────────────────────────────────────────────────
 
 @router.post("/stop", summary="Stop the auto-trading bot")
