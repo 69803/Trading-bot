@@ -49,7 +49,7 @@ log = get_logger(__name__)
 # Tuneable constants
 # ---------------------------------------------------------------------------
 ATR_SL_MULT      = 2.0    # stop-loss = entry ± ATR × this
-ATR_TP_MULT      = 1.5    # take-profit = entry ± ATR × this
+ATR_TP_MULT      = 1.0    # take-profit = entry ± ATR × this
 MIN_RR_RATIO     = 1.0    # warn if risk/reward below this (not a hard reject)
 MIN_ATR_FRACTION = 0.0001 # ATR must be > entry × this to be considered valid
 MIN_SL_TP_DIST   = 0.00010 # minimum absolute distance from entry (~1 pip for EURUSD)
