@@ -458,6 +458,61 @@ async def activate_piphunter(
     }
 
 
+# ── POST /activate/safeguard ──────────────────────────────────────────────────
+
+@router.post("/activate/safeguard", summary="Configure and start the SafeGuard Carry Trade bot")
+async def activate_safeguard(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    One-shot endpoint:
+      1. Configures strategy with SafeGuard parameters (Carry Trade, VIX filter, SMA200)
+      2. Configures risk: SL=ATR×3.0, 0.5–1% per trade, max 2.5% total
+      3. Starts the bot
+    """
+    config = await _get_or_create_strategy(current_user, db)
+    risk   = await _get_or_create_risk(current_user, db)
+
+    # Strategy params (SafeGuard signature: ema_fast=50, ema_slow=200)
+    config.ema_fast              = 50
+    config.ema_slow              = 200
+    config.rsi_period            = 14
+    config.rsi_overbought        = Decimal("70")
+    config.rsi_oversold          = Decimal("35")
+    config.symbols               = ["AUD/JPY", "NZD/JPY", "GBP/JPY", "USD/JPY"]
+    config.asset_classes         = ["forex"]
+    config.investment_amount     = Decimal("200")
+    config.run_interval_seconds  = 86400  # daily — carry trade is slow
+    config.per_symbol_max_positions = 1
+    config.allow_buy             = True
+    config.allow_sell            = False  # carry trade: long only
+    config.cooldown_seconds      = 86400  # 1 day between trades per symbol
+
+    # Risk params (wide SL, low position size — long-term hold)
+    risk.stop_loss_pct           = Decimal("0.03")   # ATR × 3.0 fallback
+    risk.take_profit_pct         = Decimal("0.09")   # ATR × 6.0 fallback
+    risk.max_open_positions      = 3
+    risk.max_daily_loss_pct      = Decimal("0.025")  # 2.5% max total exposure
+    risk.max_position_size_pct   = Decimal("0.08")
+
+    state = await _get_or_create_bot_state(current_user, db)
+    state.is_running  = True
+    state.started_at  = datetime.now(timezone.utc)
+    state.last_log    = "SafeGuard activated — Carry Trade on AUD/JPY, NZD/JPY, GBP/JPY, USD/JPY"
+    if hasattr(state, "last_error"):
+        state.last_error = None
+
+    await db.commit()
+    return {
+        "message":   "SafeGuard activated",
+        "strategy":  "safeguard",
+        "symbols":   list(config.symbols),
+        "timeframe": "1d",
+        "is_running": True,
+    }
+
+
 # ── POST /stop ────────────────────────────────────────────────────────────────
 
 @router.post("/stop", summary="Stop the auto-trading bot")
