@@ -403,6 +403,61 @@ async def activate_scalperx(
     }
 
 
+# ── POST /activate/piphunter ─────────────────────────────────────────────────
+
+@router.post("/activate/piphunter", summary="Configure and start the PipHunter Breakout bot")
+async def activate_piphunter(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    One-shot endpoint:
+      1. Configures strategy with PipHunter parameters (Breakout, ADX>20, RSI filter)
+      2. Configures risk: SL=ATR×1.0, TP1/2/3 = 1:1/2/3, 1% per trade
+      3. Starts the bot
+    """
+    config = await _get_or_create_strategy(current_user, db)
+    risk   = await _get_or_create_risk(current_user, db)
+
+    # Strategy params (PipHunter signature: ema_fast=14, ema_slow=50)
+    config.ema_fast              = 14
+    config.ema_slow              = 50
+    config.rsi_period            = 14
+    config.rsi_overbought        = Decimal("70")
+    config.rsi_oversold          = Decimal("30")
+    config.symbols               = ["GBP/USD", "EUR/USD", "GBP/JPY", "USD/JPY"]
+    config.asset_classes         = ["forex"]
+    config.investment_amount     = Decimal("200")
+    config.run_interval_seconds  = 900    # 15 min — entry timeframe
+    config.per_symbol_max_positions = 1
+    config.allow_buy             = True
+    config.allow_sell            = True
+    config.cooldown_seconds      = 3600   # 1h cooldown — avoid chasing
+
+    # Risk params (strict: 1% per trade, ATR SL, tiered TP)
+    risk.stop_loss_pct           = Decimal("0.01")   # ATR × 1.0 fallback
+    risk.take_profit_pct         = Decimal("0.03")   # TP3 = 1:3
+    risk.max_open_positions      = 3
+    risk.max_daily_loss_pct      = Decimal("0.03")   # 3% daily DD limit
+    risk.max_position_size_pct   = Decimal("0.10")
+
+    state = await _get_or_create_bot_state(current_user, db)
+    state.is_running  = True
+    state.started_at  = datetime.now(timezone.utc)
+    state.last_log    = "PipHunter activated — Breakout on GBP/USD, EUR/USD, GBP/JPY, USD/JPY"
+    if hasattr(state, "last_error"):
+        state.last_error = None
+
+    await db.commit()
+    return {
+        "message":   "PipHunter activated",
+        "strategy":  "piphunter",
+        "symbols":   list(config.symbols),
+        "timeframe": "15m",
+        "is_running": True,
+    }
+
+
 # ── POST /stop ────────────────────────────────────────────────────────────────
 
 @router.post("/stop", summary="Stop the auto-trading bot")
