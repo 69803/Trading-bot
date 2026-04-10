@@ -405,21 +405,21 @@ async def activate_scalperx(
 
 # ── POST /activate/piphunter ─────────────────────────────────────────────────
 
-@router.post("/activate/piphunter", summary="Configure and start the PipHunter Breakout bot")
+@router.post("/activate/piphunter", summary="Configure and start the Breakout bot")
 async def activate_piphunter(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     One-shot endpoint:
-      1. Configures strategy with PipHunter parameters (Breakout, ADX>20, RSI filter)
+      1. Configures strategy with Breakout parameters (ADX>20, DI+/DI-, BB squeeze, RSI filter)
       2. Configures risk: SL=ATR×1.0, TP1/2/3 = 1:1/2/3, 1% per trade
       3. Starts the bot
     """
     config = await _get_or_create_strategy(current_user, db)
     risk   = await _get_or_create_risk(current_user, db)
 
-    # Strategy params (PipHunter signature: ema_fast=14, ema_slow=50)
+    # Strategy params (Breakout signature: ema_fast=14, ema_slow=50)
     config.ema_fast              = 14
     config.ema_slow              = 50
     config.rsi_period            = 14
@@ -444,13 +444,13 @@ async def activate_piphunter(
     state = await _get_or_create_bot_state(current_user, db)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
-    state.last_log    = "PipHunter activated — Breakout on GBP/USD, EUR/USD, GBP/JPY, USD/JPY"
+    state.last_log    = "Breakout bot activated — GBP/USD, EUR/USD, GBP/JPY, USD/JPY"
     if hasattr(state, "last_error"):
         state.last_error = None
 
     await db.commit()
     return {
-        "message":   "PipHunter activated",
+        "message":   "Breakout bot activated",
         "strategy":  "piphunter",
         "symbols":   list(config.symbols),
         "timeframe": "15m",
