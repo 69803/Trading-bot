@@ -514,14 +514,14 @@ async def activate_cryptobot(
 
 # ── POST /activate/safeguard ──────────────────────────────────────────────────
 
-@router.post("/activate/safeguard", summary="Configure and start the SafeGuard Carry Trade bot")
+@router.post("/activate/safeguard", summary="Configure and start the Carry Trade bot")
 async def activate_safeguard(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     One-shot endpoint:
-      1. Configures strategy with SafeGuard parameters (Carry Trade, VIX filter, SMA200)
+      1. Configures strategy with Carry Trade parameters (VIX filter, EMA50>SMA200, swap check)
       2. Configures risk: SL=ATR×3.0, 0.5–1% per trade, max 2.5% total
       3. Starts the bot
     """
@@ -553,13 +553,13 @@ async def activate_safeguard(
     state = await _get_or_create_bot_state(current_user, db)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
-    state.last_log    = "SafeGuard activated — Carry Trade on AUD/JPY, NZD/JPY, GBP/JPY, USD/JPY"
+    state.last_log    = "Carry Trade bot activated — AUD/JPY, NZD/JPY, GBP/JPY, USD/JPY"
     if hasattr(state, "last_error"):
         state.last_error = None
 
     await db.commit()
     return {
-        "message":   "SafeGuard activated",
+        "message":   "Carry Trade bot activated",
         "strategy":  "safeguard",
         "symbols":   list(config.symbols),
         "timeframe": "1d",
