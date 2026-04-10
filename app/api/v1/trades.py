@@ -31,6 +31,7 @@ async def list_trades(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     symbol: str | None = Query(None),
+    bot_id: str | None = Query(None, description="Filter by bot (omit for all bots)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> TradeListResponse:
@@ -39,6 +40,8 @@ async def list_trades(
     stmt = select(Trade).where(Trade.portfolio_id == portfolio.id)
     if symbol:
         stmt = stmt.where(Trade.symbol == symbol.upper())
+    if bot_id:
+        stmt = stmt.where(Trade.bot_id == bot_id)
 
     count_result = await db.execute(
         select(func.count()).select_from(stmt.subquery())

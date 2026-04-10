@@ -25,3 +25,4 @@ class BotLog(Base):
     )
     message: Mapped[str] = mapped_column(Text, nullable=False)
     symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bot_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)

@@ -49,6 +49,7 @@ async def create_order(
     limit_price: float | None = None,
     event_context: str | None = None,
     is_paper: bool = True,
+    bot_id: str | None = None,
 ) -> Order:
     """
     Create, validate, and (for market orders) immediately fill an order.
@@ -97,6 +98,7 @@ async def create_order(
             limit_price=Decimal(str(limit_price)) if limit_price else None,
             status="rejected",
             rejection_reason=reason,
+            bot_id=bot_id,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -123,6 +125,7 @@ async def create_order(
         filled_quantity=Decimal("0"),
         limit_price=Decimal(str(limit_price)) if limit_price else None,
         status="pending",
+        bot_id=bot_id,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -179,6 +182,7 @@ async def create_order(
             price=fill_price,
             commission=Decimal("0"),
             realized_pnl=None,
+            bot_id=bot_id,
             executed_at=datetime.now(timezone.utc),
             created_at=datetime.now(timezone.utc),
         )
@@ -199,7 +203,7 @@ async def create_order(
         await db.flush()
 
         # ── Always create a brand-new position for every trade ───────────────
-        await _open_or_update_position(db, portfolio_id, trade, invest_dec, event_context, is_paper)
+        await _open_or_update_position(db, portfolio_id, trade, invest_dec, event_context, is_paper, bot_id)
 
         await db.commit()
         await db.refresh(order)
@@ -231,12 +235,16 @@ async def get_orders(
     status: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    bot_id: str | None = None,
 ) -> Tuple[List[Order], int]:
     base_q  = select(Order).where(Order.portfolio_id == portfolio_id)
     count_q = select(func.count(Order.id)).where(Order.portfolio_id == portfolio_id)
     if status:
         base_q  = base_q.where(Order.status == status)
         count_q = count_q.where(Order.status == status)
+    if bot_id:
+        base_q  = base_q.where(Order.bot_id == bot_id)
+        count_q = count_q.where(Order.bot_id == bot_id)
     count_result = await db.execute(count_q)
     total: int = count_result.scalar() or 0
     result = await db.execute(
@@ -355,6 +363,7 @@ async def _open_or_update_position(
     invest_dec: Decimal,
     event_context: str | None = None,
     is_paper: bool = True,
+    bot_id: str | None = None,
 ) -> Position:
     """Always creates a NEW position record for every trade (IQ Option style)."""
     desired_side = "long" if trade.side == "buy" else "short"
@@ -392,6 +401,7 @@ async def _open_or_update_position(
         realized_pnl=Decimal("0"),
         event_context=event_context,
         is_paper=is_paper,
+        bot_id=bot_id,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )

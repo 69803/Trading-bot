@@ -42,6 +42,7 @@ class Trade(Base):
     executed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
+    bot_id: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
     # Relationships
     order: Mapped["Order"] = relationship("Order", back_populates="trades")

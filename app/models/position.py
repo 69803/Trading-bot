@@ -51,6 +51,9 @@ class Position(Base):
         Numeric(18, 8), default=Decimal("0.0"), nullable=False
     )
 
+    # ── Bot identifier — which bot opened this position ─────────────────────
+    bot_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+
     # ── Trade mode — set at open time by the caller ─────────────────────────
     # True  → paper trade (simulated, no real money)
     # False → live trade  (real broker execution)

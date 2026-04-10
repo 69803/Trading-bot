@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import traceback as _traceback
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,31 +40,43 @@ _DEFAULT_STRATEGY = dict(
 )
 
 
-async def _get_or_create_bot_state(user: User, db: AsyncSession) -> BotState:
-    result = await db.execute(select(BotState).where(BotState.user_id == user.id))
+async def _get_or_create_bot_state(user: User, db: AsyncSession, bot_id: str) -> BotState:
+    result = await db.execute(
+        select(BotState).where(BotState.user_id == user.id, BotState.bot_id == bot_id)
+    )
     state: BotState | None = result.scalars().first()
     if state is None:
-        state = BotState(user_id=user.id, is_running=False)
+        state = BotState(user_id=user.id, bot_id=bot_id, is_running=False)
         db.add(state)
         await db.flush()
     return state
 
 
-async def _get_or_create_strategy(user: User, db: AsyncSession) -> StrategyConfig:
-    result = await db.execute(select(StrategyConfig).where(StrategyConfig.user_id == user.id))
+async def _get_or_create_strategy(user: User, db: AsyncSession, bot_id: str) -> StrategyConfig:
+    result = await db.execute(
+        select(StrategyConfig).where(
+            StrategyConfig.user_id == user.id,
+            StrategyConfig.bot_id  == bot_id,
+        )
+    )
     config: StrategyConfig | None = result.scalars().first()
     if config is None:
-        config = StrategyConfig(user_id=user.id, **_DEFAULT_STRATEGY)
+        config = StrategyConfig(user_id=user.id, bot_id=bot_id, **_DEFAULT_STRATEGY)
         db.add(config)
         await db.flush()
     return config
 
 
-async def _get_or_create_risk(user: User, db: AsyncSession) -> RiskSettings:
-    result = await db.execute(select(RiskSettings).where(RiskSettings.user_id == user.id))
+async def _get_or_create_risk(user: User, db: AsyncSession, bot_id: str) -> RiskSettings:
+    result = await db.execute(
+        select(RiskSettings).where(
+            RiskSettings.user_id == user.id,
+            RiskSettings.bot_id  == bot_id,
+        )
+    )
     risk: RiskSettings | None = result.scalars().first()
     if risk is None:
-        risk = RiskSettings(user_id=user.id)
+        risk = RiskSettings(user_id=user.id, bot_id=bot_id)
         db.add(risk)
         await db.flush()
     return risk
@@ -97,25 +109,26 @@ def _build_config_out(config: StrategyConfig, risk: RiskSettings) -> BotConfigOu
 
 @router.get("/status", summary="Get bot status")
 async def get_bot_status(
+    bot_id: str = Query(..., description="Bot identifier (e.g. trendmaster)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    print(f"[STATUS] enter user={current_user.id}", flush=True)
+    print(f"[STATUS] enter user={current_user.id} bot_id={bot_id}", flush=True)
     try:
-        return await _get_bot_status_inner(current_user, db)
+        return await _get_bot_status_inner(current_user, db, bot_id)
     except Exception as exc:
         tb = _traceback.format_exc()
         print(f"[STATUS] EXCEPTION: {exc}\n{tb}", flush=True)
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
 
-async def _get_bot_status_inner(current_user: User, db: AsyncSession) -> dict:
-    state = await _get_or_create_bot_state(current_user, db)
-    print(f"[STATUS] got state: is_running={state.is_running} cycles={state.cycles_run}", flush=True)
-    config = await _get_or_create_strategy(current_user, db)
+async def _get_bot_status_inner(current_user: User, db: AsyncSession, bot_id: str) -> dict:
+    state = await _get_or_create_bot_state(current_user, db, bot_id)
+    print(f"[STATUS] got state: bot_id={bot_id} is_running={state.is_running} cycles={state.cycles_run}", flush=True)
+    config = await _get_or_create_strategy(current_user, db, bot_id)
     print(f"[STATUS] got config: symbols={config.symbols}", flush=True)
 
-    # Open positions count
+    # Open positions count for this bot
     port_r = await db.execute(select(Portfolio).where(Portfolio.user_id == current_user.id))
     portfolio = port_r.scalars().first()
     open_count = 0
@@ -124,6 +137,7 @@ async def _get_bot_status_inner(current_user: User, db: AsyncSession) -> dict:
             select(Position).where(
                 Position.portfolio_id == portfolio.id,
                 Position.is_open == True,  # noqa: E712
+                Position.bot_id == bot_id,
             )
         )
         open_count = len(pos_r.scalars().all())
@@ -144,12 +158,12 @@ async def _get_bot_status_inner(current_user: User, db: AsyncSession) -> dict:
             state.last_cycle_at + timedelta(seconds=int(config.run_interval_seconds))
         ).isoformat()
 
-    # No explicit commit needed — get_db dependency commits after the endpoint returns.
     print(f"[STATUS] building return dict, last_log={state.last_log!r}", flush=True)
     return {
         "is_running": state.is_running,
         "started_at": state.started_at.isoformat() if state.started_at else None,
         "last_run_at": state.last_cycle_at.isoformat() if state.last_cycle_at else None,
+        "last_cycle_at": state.last_cycle_at.isoformat() if state.last_cycle_at else None,
         "next_run_at": next_run_at,
         "cycles_run": state.cycles_run,
         "open_positions_count": open_count,
@@ -172,11 +186,12 @@ async def _get_bot_status_inner(current_user: User, db: AsyncSession) -> dict:
 
 @router.get("/config", response_model=BotConfigOut, summary="Get bot configuration")
 async def get_bot_config(
+    bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> BotConfigOut:
-    config = await _get_or_create_strategy(current_user, db)
-    risk = await _get_or_create_risk(current_user, db)
+    config = await _get_or_create_strategy(current_user, db, bot_id)
+    risk = await _get_or_create_risk(current_user, db, bot_id)
     await db.commit()
     return _build_config_out(config, risk)
 
@@ -186,11 +201,12 @@ async def get_bot_config(
 @router.put("/config", response_model=BotConfigOut, summary="Save bot configuration")
 async def update_bot_config(
     payload: BotConfigUpdate,
+    bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> BotConfigOut:
-    config = await _get_or_create_strategy(current_user, db)
-    risk = await _get_or_create_risk(current_user, db)
+    config = await _get_or_create_strategy(current_user, db, bot_id)
+    risk = await _get_or_create_risk(current_user, db, bot_id)
 
     strategy_fields = [
         "ema_fast", "ema_slow", "rsi_period", "rsi_overbought", "rsi_oversold",
@@ -213,7 +229,7 @@ async def update_bot_config(
 
     await db.commit()
     saved_symbols = list(config.symbols or [])
-    print(f"[SaveConfig] user={current_user.id} symbols={saved_symbols}")
+    print(f"[SaveConfig] user={current_user.id} bot_id={bot_id} symbols={saved_symbols}")
     return _build_config_out(config, risk)
 
 
@@ -222,15 +238,16 @@ async def update_bot_config(
 @router.get("/logs", summary="Full bot cycle log history")
 async def get_bot_logs(
     limit: int = 50,
+    bot_id: str | None = Query(None, description="Filter by bot (omit for all bots)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     from app.models.bot_log import BotLog
+    q = select(BotLog).where(BotLog.user_id == current_user.id)
+    if bot_id:
+        q = q.where(BotLog.bot_id == bot_id)
     result = await db.execute(
-        select(BotLog)
-        .where(BotLog.user_id == current_user.id)
-        .order_by(BotLog.timestamp.desc())
-        .limit(limit)
+        q.order_by(BotLog.timestamp.desc()).limit(limit)
     )
     entries = result.scalars().all()
     return {
@@ -249,16 +266,17 @@ async def get_bot_logs(
 
 @router.post("/start", summary="Start the auto-trading bot")
 async def start_bot(
+    bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, bot_id)
     if state.is_running:
         return {"message": "Bot is already running", "is_running": True}
 
-    config = await _get_or_create_strategy(current_user, db)
+    config = await _get_or_create_strategy(current_user, db, bot_id)
     symbols = list(config.symbols or [])
-    print(f"[StartBot] user={current_user.id} symbols={symbols}")
+    print(f"[StartBot] user={current_user.id} bot_id={bot_id} symbols={symbols}")
 
     if not symbols:
         raise HTTPException(
@@ -272,7 +290,7 @@ async def start_bot(
     if hasattr(state, "last_error"):
         state.last_error = None
     await db.commit()
-    print(f"[StartBot] Bot started for user={current_user.id} with symbols={symbols}")
+    print(f"[StartBot] Bot started for user={current_user.id} bot_id={bot_id} symbols={symbols}")
     return {"message": "Bot started successfully", "is_running": True}
 
 
@@ -280,14 +298,29 @@ async def start_bot(
 
 @router.delete("/logs", summary="Clear all bot cycle logs for the current user")
 async def clear_bot_logs(
+    bot_id: str | None = Query(None, description="Clear logs for specific bot (omit for all)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     from sqlalchemy import delete
     from app.models.bot_log import BotLog
-    await db.execute(delete(BotLog).where(BotLog.user_id == current_user.id))
-    state = await _get_or_create_bot_state(current_user, db)
-    state.last_log = None
+    q = delete(BotLog).where(BotLog.user_id == current_user.id)
+    if bot_id:
+        q = q.where(BotLog.bot_id == bot_id)
+    await db.execute(q)
+
+    # Reset last_log on the relevant bot state(s)
+    if bot_id:
+        state_q = select(BotState).where(
+            BotState.user_id == current_user.id,
+            BotState.bot_id  == bot_id,
+        )
+    else:
+        state_q = select(BotState).where(BotState.user_id == current_user.id)
+    states_r = await db.execute(state_q)
+    for s in states_r.scalars().all():
+        s.last_log = None
+
     await db.commit()
     return {"cleared": True}
 
@@ -299,16 +332,10 @@ async def activate_trendmaster(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    One-shot endpoint:
-      1. Configures strategy with TrendMaster parameters (EMA 9/21, forex pairs, 5m)
-      2. Configures risk: SL=ATR×1.5, TP=ATR×3.0, 1% max risk per trade
-      3. Starts the bot
-    """
-    config = await _get_or_create_strategy(current_user, db)
-    risk   = await _get_or_create_risk(current_user, db)
+    _bot_id = "trendmaster"
+    config = await _get_or_create_strategy(current_user, db, _bot_id)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id)
 
-    # ── Strategy params (TrendMaster signature: ema_fast=9, ema_slow=21) ──────
     config.ema_fast              = 9
     config.ema_slow              = 21
     config.rsi_period            = 14
@@ -317,21 +344,19 @@ async def activate_trendmaster(
     config.symbols               = ["EUR/USD", "GBP/USD", "USD/CHF", "AUD/USD"]
     config.asset_classes         = ["forex"]
     config.investment_amount     = Decimal("200")
-    config.run_interval_seconds  = 300   # 5 minutes — matches scalping timeframe
+    config.run_interval_seconds  = 300
     config.per_symbol_max_positions = 1
     config.allow_buy             = True
     config.allow_sell            = True
-    config.cooldown_seconds      = 900  # 15 min between trades per symbol
+    config.cooldown_seconds      = 900
 
-    # ── Risk params (1% per trade, ATR-based SL/TP) ───────────────────────────
-    risk.stop_loss_pct           = Decimal("0.015")   # fallback when ATR unavailable
-    risk.take_profit_pct         = Decimal("0.03")    # fallback
+    risk.stop_loss_pct           = Decimal("0.015")
+    risk.take_profit_pct         = Decimal("0.03")
     risk.max_open_positions      = 4
-    risk.max_daily_loss_pct      = Decimal("0.03")    # 3% daily drawdown limit
-    risk.max_position_size_pct   = Decimal("0.10")    # max 10% equity per trade
+    risk.max_daily_loss_pct      = Decimal("0.03")
+    risk.max_position_size_pct   = Decimal("0.10")
 
-    # ── Start the bot ─────────────────────────────────────────────────────────
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "TrendMaster activated — monitoring EUR/USD, GBP/USD, USD/CHF, AUD/USD"
@@ -341,7 +366,7 @@ async def activate_trendmaster(
     await db.commit()
     return {
         "message":    "TrendMaster activated",
-        "strategy":   "trendmaster",
+        "strategy":   _bot_id,
         "symbols":    list(config.symbols),
         "timeframe":  "5m",
         "is_running": True,
@@ -355,38 +380,31 @@ async def activate_scalperx(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    One-shot: configures Mean Reversion params (BB 20, Stoch 5/3/3, ADX gate)
-    and starts the bot.
-    Detection signature: ema_fast=20, ema_slow=5
-    """
-    config = await _get_or_create_strategy(current_user, db)
-    risk   = await _get_or_create_risk(current_user, db)
+    _bot_id = "scalperx"
+    config = await _get_or_create_strategy(current_user, db, _bot_id)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id)
 
-    # Strategy params (Mean Reversion signature: ema_fast=20, ema_slow=5)
-    config.ema_fast              = 20   # BB period
-    config.ema_slow              = 5    # Stochastic K period
+    config.ema_fast              = 20
+    config.ema_slow              = 5
     config.rsi_period            = 14
     config.rsi_overbought        = Decimal("70")
     config.rsi_oversold          = Decimal("30")
     config.symbols               = ["EUR/USD", "EUR/GBP", "USD/CHF", "AUD/NZD"]
     config.asset_classes         = ["forex"]
     config.investment_amount     = Decimal("200")
-    config.run_interval_seconds  = 900   # 15 min — matches signal timeframe
+    config.run_interval_seconds  = 900
     config.per_symbol_max_positions = 1
     config.allow_buy             = True
     config.allow_sell            = True
-    config.cooldown_seconds      = 1800  # 30 min cooldown between trades per symbol
+    config.cooldown_seconds      = 1800
 
-    # Risk params
-    risk.stop_loss_pct           = Decimal("0.02")   # fallback
-    risk.take_profit_pct         = Decimal("0.03")   # fallback
+    risk.stop_loss_pct           = Decimal("0.02")
+    risk.take_profit_pct         = Decimal("0.03")
     risk.max_open_positions      = 4
-    risk.max_daily_loss_pct      = Decimal("0.03")   # 3% daily drawdown
+    risk.max_daily_loss_pct      = Decimal("0.03")
     risk.max_position_size_pct   = Decimal("0.10")
 
-    # Start
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Mean Reversion activated — EUR/USD, EUR/GBP, USD/CHF, AUD/NZD"
@@ -396,7 +414,7 @@ async def activate_scalperx(
     await db.commit()
     return {
         "message":   "Mean Reversion activated",
-        "strategy":  "mean_reversion",
+        "strategy":  _bot_id,
         "symbols":   list(config.symbols),
         "timeframe": "15m",
         "is_running": True,
@@ -410,16 +428,10 @@ async def activate_piphunter(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    One-shot endpoint:
-      1. Configures strategy with Breakout parameters (ADX>20, DI+/DI-, BB squeeze, RSI filter)
-      2. Configures risk: SL=ATR×1.0, TP1/2/3 = 1:1/2/3, 1% per trade
-      3. Starts the bot
-    """
-    config = await _get_or_create_strategy(current_user, db)
-    risk   = await _get_or_create_risk(current_user, db)
+    _bot_id = "piphunter"
+    config = await _get_or_create_strategy(current_user, db, _bot_id)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id)
 
-    # Strategy params (Breakout signature: ema_fast=14, ema_slow=50)
     config.ema_fast              = 14
     config.ema_slow              = 50
     config.rsi_period            = 14
@@ -428,20 +440,19 @@ async def activate_piphunter(
     config.symbols               = ["GBP/USD", "EUR/USD", "GBP/JPY", "USD/JPY"]
     config.asset_classes         = ["forex"]
     config.investment_amount     = Decimal("200")
-    config.run_interval_seconds  = 900    # 15 min — entry timeframe
+    config.run_interval_seconds  = 900
     config.per_symbol_max_positions = 1
     config.allow_buy             = True
     config.allow_sell            = True
-    config.cooldown_seconds      = 3600   # 1h cooldown — avoid chasing
+    config.cooldown_seconds      = 3600
 
-    # Risk params (strict: 1% per trade, ATR SL, tiered TP)
-    risk.stop_loss_pct           = Decimal("0.01")   # ATR × 1.0 fallback
-    risk.take_profit_pct         = Decimal("0.03")   # TP3 = 1:3
+    risk.stop_loss_pct           = Decimal("0.01")
+    risk.take_profit_pct         = Decimal("0.03")
     risk.max_open_positions      = 3
-    risk.max_daily_loss_pct      = Decimal("0.03")   # 3% daily DD limit
+    risk.max_daily_loss_pct      = Decimal("0.03")
     risk.max_position_size_pct   = Decimal("0.10")
 
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Breakout bot activated — GBP/USD, EUR/USD, GBP/JPY, USD/JPY"
@@ -451,7 +462,7 @@ async def activate_piphunter(
     await db.commit()
     return {
         "message":   "Breakout bot activated",
-        "strategy":  "piphunter",
+        "strategy":  _bot_id,
         "symbols":   list(config.symbols),
         "timeframe": "15m",
         "is_running": True,
@@ -465,37 +476,31 @@ async def activate_cryptobot(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    One-shot: configures Momentum params (EMA50/200, RSI10, ADX>25, ROC, MACD)
-    and starts the bot.
-    Detection signature: ema_fast=10, ema_slow=100
-    """
-    config = await _get_or_create_strategy(current_user, db)
-    risk   = await _get_or_create_risk(current_user, db)
+    _bot_id = "cryptobot"
+    config = await _get_or_create_strategy(current_user, db, _bot_id)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id)
 
-    # Strategy params (Momentum signature: ema_fast=10, ema_slow=100)
-    config.ema_fast              = 10    # RSI period proxy
-    config.ema_slow              = 100   # distinctive momentum signature
-    config.rsi_period            = 10    # shorter RSI for momentum
+    config.ema_fast              = 10
+    config.ema_slow              = 100
+    config.rsi_period            = 10
     config.rsi_overbought        = Decimal("75")
-    config.rsi_oversold          = Decimal("50")   # momentum zone floor
+    config.rsi_oversold          = Decimal("50")
     config.symbols               = ["GBP/USD", "EUR/USD", "AUD/USD", "USD/JPY", "NZD/USD"]
     config.asset_classes         = ["forex"]
     config.investment_amount     = Decimal("200")
-    config.run_interval_seconds  = 3600   # 1h — matches signal timeframe
+    config.run_interval_seconds  = 3600
     config.per_symbol_max_positions = 1
     config.allow_buy             = True
     config.allow_sell            = True
-    config.cooldown_seconds      = 7200   # 2h cooldown — this is not scalping
+    config.cooldown_seconds      = 7200
 
-    # Risk params (momentum: wider SL, no fixed TP, 1–1.5% per trade)
-    risk.stop_loss_pct           = Decimal("0.015")  # ATR × 1.5 fallback
-    risk.take_profit_pct         = Decimal("0.06")   # ATR × 4.0 hard cap
-    risk.max_open_positions      = 2                 # max 2 momentum positions
-    risk.max_daily_loss_pct      = Decimal("0.02")   # 2% daily DD limit
+    risk.stop_loss_pct           = Decimal("0.015")
+    risk.take_profit_pct         = Decimal("0.06")
+    risk.max_open_positions      = 2
+    risk.max_daily_loss_pct      = Decimal("0.02")
     risk.max_position_size_pct   = Decimal("0.15")
 
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Momentum activated — GBP/USD, EUR/USD, AUD/USD, USD/JPY, NZD/USD"
@@ -505,7 +510,7 @@ async def activate_cryptobot(
     await db.commit()
     return {
         "message":   "Momentum activated",
-        "strategy":  "momentum",
+        "strategy":  _bot_id,
         "symbols":   list(config.symbols),
         "timeframe": "1h",
         "is_running": True,
@@ -519,16 +524,10 @@ async def activate_safeguard(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    One-shot endpoint:
-      1. Configures strategy with Carry Trade parameters (VIX filter, EMA50>SMA200, swap check)
-      2. Configures risk: SL=ATR×3.0, 0.5–1% per trade, max 2.5% total
-      3. Starts the bot
-    """
-    config = await _get_or_create_strategy(current_user, db)
-    risk   = await _get_or_create_risk(current_user, db)
+    _bot_id = "safeguard"
+    config = await _get_or_create_strategy(current_user, db, _bot_id)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id)
 
-    # Strategy params (SafeGuard signature: ema_fast=50, ema_slow=200)
     config.ema_fast              = 50
     config.ema_slow              = 200
     config.rsi_period            = 14
@@ -537,20 +536,19 @@ async def activate_safeguard(
     config.symbols               = ["AUD/JPY", "NZD/JPY", "GBP/JPY", "USD/JPY"]
     config.asset_classes         = ["forex"]
     config.investment_amount     = Decimal("200")
-    config.run_interval_seconds  = 86400  # daily — carry trade is slow
+    config.run_interval_seconds  = 86400
     config.per_symbol_max_positions = 1
     config.allow_buy             = True
-    config.allow_sell            = False  # carry trade: long only
-    config.cooldown_seconds      = 86400  # 1 day between trades per symbol
+    config.allow_sell            = False
+    config.cooldown_seconds      = 86400
 
-    # Risk params (wide SL, low position size — long-term hold)
-    risk.stop_loss_pct           = Decimal("0.03")   # ATR × 3.0 fallback
-    risk.take_profit_pct         = Decimal("0.09")   # ATR × 6.0 fallback
+    risk.stop_loss_pct           = Decimal("0.03")
+    risk.take_profit_pct         = Decimal("0.09")
     risk.max_open_positions      = 3
-    risk.max_daily_loss_pct      = Decimal("0.025")  # 2.5% max total exposure
+    risk.max_daily_loss_pct      = Decimal("0.025")
     risk.max_position_size_pct   = Decimal("0.08")
 
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Carry Trade bot activated — AUD/JPY, NZD/JPY, GBP/JPY, USD/JPY"
@@ -560,7 +558,7 @@ async def activate_safeguard(
     await db.commit()
     return {
         "message":   "Carry Trade bot activated",
-        "strategy":  "safeguard",
+        "strategy":  _bot_id,
         "symbols":   list(config.symbols),
         "timeframe": "1d",
         "is_running": True,
@@ -574,16 +572,10 @@ async def activate_combo(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    One-shot endpoint:
-      1. Configures MasterBot with all 6 forex pairs (covers all strategies)
-      2. Balanced risk: 1% per trade, 3% max simultaneous exposure
-      3. Starts the bot
-    """
-    config = await _get_or_create_strategy(current_user, db)
-    risk   = await _get_or_create_risk(current_user, db)
+    _bot_id = "combo"
+    config = await _get_or_create_strategy(current_user, db, _bot_id)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id)
 
-    # Strategy params (MasterBot signature: ema_fast=9, ema_slow=200)
     config.ema_fast              = 9
     config.ema_slow              = 200
     config.rsi_period            = 14
@@ -592,20 +584,19 @@ async def activate_combo(
     config.symbols               = ["EUR/USD", "GBP/USD", "AUD/JPY", "GBP/JPY", "USD/JPY", "NZD/JPY"]
     config.asset_classes         = ["forex"]
     config.investment_amount     = Decimal("200")
-    config.run_interval_seconds  = 3600   # 1h — multi-strategy needs higher TF
+    config.run_interval_seconds  = 3600
     config.per_symbol_max_positions = 1
     config.allow_buy             = True
     config.allow_sell            = True
     config.cooldown_seconds      = 3600
 
-    # Risk params (balanced: 1% per trade, max 3% total)
     risk.stop_loss_pct           = Decimal("0.015")
     risk.take_profit_pct         = Decimal("0.03")
     risk.max_open_positions      = 3
-    risk.max_daily_loss_pct      = Decimal("0.03")   # 3% daily DD → stop
+    risk.max_daily_loss_pct      = Decimal("0.03")
     risk.max_position_size_pct   = Decimal("0.10")
 
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "MasterBot activated — Multi-Strategy on EUR/USD, GBP/USD, AUD/JPY, GBP/JPY, USD/JPY, NZD/JPY"
@@ -615,7 +606,7 @@ async def activate_combo(
     await db.commit()
     return {
         "message":    "MasterBot activated",
-        "strategy":   "combo",
+        "strategy":   _bot_id,
         "symbols":    list(config.symbols),
         "timeframe":  "1h",
         "is_running": True,
@@ -626,10 +617,11 @@ async def activate_combo(
 
 @router.post("/stop", summary="Stop the auto-trading bot")
 async def stop_bot(
+    bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    state = await _get_or_create_bot_state(current_user, db)
+    state = await _get_or_create_bot_state(current_user, db, bot_id)
     if not state.is_running:
         return {"message": "Bot is not running", "is_running": False}
     state.is_running = False

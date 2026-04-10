@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, Integer, Numeric
+from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,13 +14,17 @@ if TYPE_CHECKING:
 
 class RiskSettings(Base):
     __tablename__ = "risk_settings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "bot_id", name="uq_risk_settings_user_bot"),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        unique=True,
         nullable=False,
+        index=True,
     )
+    bot_id: Mapped[str] = mapped_column(String(50), nullable=False, default="trendmaster")
     max_position_size_pct: Mapped[Decimal] = mapped_column(
         Numeric(5, 4), default=Decimal("0.05"), nullable=False
     )
@@ -41,23 +45,18 @@ class RiskSettings(Base):
     )
 
     # ── Advanced risk management (all default to 0 / False = disabled) ───────
-    # Trailing stop: if > 0, trail the stop at this % below peak price
     trailing_stop_pct: Mapped[Decimal] = mapped_column(
         Numeric(6, 4), default=Decimal("0.00"), nullable=False
     )
-    # Break-even: move SL to entry when unrealised gain reaches this %
     break_even_trigger_pct: Mapped[Decimal] = mapped_column(
         Numeric(6, 4), default=Decimal("0.00"), nullable=False
     )
-    # Consecutive loss circuit breaker (0 = disabled)
     max_consecutive_losses: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
-    # Max new trades per 60-minute window (0 = disabled)
     max_trades_per_hour: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
-    # Volatility-adjusted sizing: reduce position size when ATR is high
     volatility_sizing_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
@@ -66,4 +65,4 @@ class RiskSettings(Base):
     user: Mapped["User"] = relationship("User", back_populates="risk_settings")
 
     def __repr__(self) -> str:
-        return f"<RiskSettings user_id={self.user_id}>"
+        return f"<RiskSettings user_id={self.user_id} bot_id={self.bot_id}>"

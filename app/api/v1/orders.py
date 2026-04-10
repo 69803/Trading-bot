@@ -33,6 +33,7 @@ async def list_orders(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     order_status: str | None = Query(None, alias="status"),
+    bot_id: str | None = Query(None, description="Filter by bot (omit for all bots)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> OrderListResponse:
@@ -43,6 +44,7 @@ async def list_orders(
         status=order_status,
         limit=page_size,
         offset=(page - 1) * page_size,
+        bot_id=bot_id,
     )
     return OrderListResponse(items=orders, total=total)
 

@@ -104,6 +104,7 @@ async def get_summary(
 async def get_positions(
     open_only: bool = Query(False, description="Return only open positions when True"),
     limit: int = Query(100, ge=1, le=500),
+    bot_id: str | None = Query(None, description="Filter by bot (omit for all bots)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[PositionOut]:
@@ -115,6 +116,8 @@ async def get_positions(
     stmt = select(Position).where(Position.portfolio_id == portfolio.id)
     if open_only:
         stmt = stmt.where(Position.is_open == True)  # noqa: E712
+    if bot_id:
+        stmt = stmt.where(Position.bot_id == bot_id)
     result = await db.execute(stmt.order_by(Position.opened_at.desc()).limit(limit))
     return result.scalars().all()
 

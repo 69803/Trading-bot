@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, ForeignKey, Integer, JSON, Numeric
+from sqlalchemy import Boolean, ForeignKey, Integer, JSON, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,13 +14,17 @@ if TYPE_CHECKING:
 
 class StrategyConfig(Base):
     __tablename__ = "strategy_configs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "bot_id", name="uq_strategy_configs_user_bot"),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        unique=True,
         nullable=False,
+        index=True,
     )
+    bot_id: Mapped[str] = mapped_column(String(50), nullable=False, default="trendmaster")
     ema_fast: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     ema_slow: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     rsi_period: Mapped[int] = mapped_column(Integer, default=14, nullable=False)
@@ -46,4 +50,4 @@ class StrategyConfig(Base):
     user: Mapped["User"] = relationship("User", back_populates="strategy_config")
 
     def __repr__(self) -> str:
-        return f"<StrategyConfig user_id={self.user_id} auto_trade={self.auto_trade}>"
+        return f"<StrategyConfig user_id={self.user_id} bot_id={self.bot_id} auto_trade={self.auto_trade}>"

@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import ForeignKey, Numeric, String, Text
+from sqlalchemy import ForeignKey, Numeric, String, Text, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +40,7 @@ class Order(Base):
         String(20), nullable=False, index=True
     )  # pending / filled / cancelled / rejected
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bot_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
 
     # Relationships
     portfolio: Mapped["Portfolio"] = relationship("Portfolio", back_populates="orders")

@@ -159,11 +159,15 @@ async def run_bot_cycle(db: AsyncSession) -> None:
 
 async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
     user_id = state.user_id
+    bot_id  = getattr(state, "bot_id", "trendmaster") or "trendmaster"
 
-    # Load strategy config — use .first() to tolerate accidental duplicate rows
-    log.debug("bot_service._run_user_cycle: querying StrategyConfig", user_id=str(user_id))
+    # Load strategy config for this specific bot
+    log.debug("bot_service._run_user_cycle: querying StrategyConfig", user_id=str(user_id), bot_id=bot_id)
     sc_result = await db.execute(
-        select(StrategyConfig).where(StrategyConfig.user_id == user_id)
+        select(StrategyConfig).where(
+            StrategyConfig.user_id == user_id,
+            StrategyConfig.bot_id  == bot_id,
+        )
     )
     config: Optional[StrategyConfig] = sc_result.scalars().first()
     if config is None or not config.symbols:
@@ -182,10 +186,13 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
         state.last_log = "No portfolio found"
         return
 
-    # Load risk settings — use .first() to tolerate accidental duplicate rows
-    log.debug("bot_service._run_user_cycle: querying RiskSettings", user_id=str(user_id))
+    # Load risk settings for this specific bot
+    log.debug("bot_service._run_user_cycle: querying RiskSettings", user_id=str(user_id), bot_id=bot_id)
     risk_result = await db.execute(
-        select(RiskSettings).where(RiskSettings.user_id == user_id)
+        select(RiskSettings).where(
+            RiskSettings.user_id == user_id,
+            RiskSettings.bot_id  == bot_id,
+        )
     )
     risk: Optional[RiskSettings] = risk_result.scalars().first()
 
@@ -258,7 +265,7 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
     for _sym in config.symbols:
         try:
             _close_msgs, _ = await _evaluate_open_positions(
-                db=db, portfolio=portfolio, symbol=_sym, risk=risk,
+                db=db, portfolio=portfolio, symbol=_sym, risk=risk, bot_id=bot_id,
             )
             for _m in _close_msgs:
                 _pre_guard_close_msgs.append(f"{_sym}: {_m}")
@@ -362,6 +369,7 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
                 risk=risk,
                 symbol=symbol,
                 total_open_positions=live_open_positions,
+                bot_id=bot_id,
             )
             if position_opened:
                 live_open_positions += 1
@@ -396,6 +404,7 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
         user_id=user_id,
         timestamp=now,
         message=state.last_log,
+        bot_id=bot_id,
         symbol=symbol_hint if len(config.symbols) == 1 else None,
     ))
 
@@ -420,6 +429,7 @@ async def _process_symbol(
     risk: Optional[RiskSettings],
     symbol: str,
     total_open_positions: int,
+    bot_id: str = "trendmaster",
 ) -> tuple[str, bool]:
     """
     Run the full 5-phase engine for one symbol.
@@ -436,17 +446,20 @@ async def _process_symbol(
     # Uses a fresh live price (not the stale candle close) so the decision
     # matches what the UI is displaying.
     close_msgs, remaining_positions = await _evaluate_open_positions(
-        db=db, portfolio=portfolio, symbol=symbol, risk=risk,
+        db=db, portfolio=portfolio, symbol=symbol, risk=risk, bot_id=bot_id,
     )
     if close_msgs:
         return " | ".join(close_msgs), False
 
     # ── Cooldown check — skip symbol if a trade was opened too recently ───────
+    _cooldown_q = select(Position).where(
+        Position.portfolio_id == portfolio.id,
+        Position.symbol       == symbol,
+    )
+    if bot_id:
+        _cooldown_q = _cooldown_q.where(Position.bot_id == bot_id)
     _last_pos_res = await db.execute(
-        select(Position)
-        .where(Position.portfolio_id == portfolio.id, Position.symbol == symbol)
-        .order_by(Position.opened_at.desc())
-        .limit(1)
+        _cooldown_q.order_by(Position.opened_at.desc()).limit(1)
     )
     _last_pos = _last_pos_res.scalars().first()
     if _last_pos and _last_pos.opened_at:
@@ -1249,6 +1262,7 @@ async def _process_symbol(
             investment_amount=assessment.position_size_dollars,
             event_context=event_context,
             is_paper=True,
+            bot_id=bot_id,
         )
 
         log.info(
@@ -1277,6 +1291,7 @@ async def _process_symbol(
                 sl=assessment.stop_loss_price,
                 tp=assessment.take_profit_price,
                 candle_entry=float(assessment.entry_price),
+                bot_id=bot_id,
             )
 
         log.info("ORDER CREATED — BUY filled", symbol=symbol, order_id=str(order.id))
@@ -1371,6 +1386,7 @@ async def _process_symbol(
             investment_amount=assessment.position_size_dollars,
             event_context=event_context,
             is_paper=True,
+            bot_id=bot_id,
         )
 
         log.info(
@@ -1399,6 +1415,7 @@ async def _process_symbol(
                 sl=assessment.stop_loss_price,
                 tp=assessment.take_profit_price,
                 candle_entry=float(assessment.entry_price),
+                bot_id=bot_id,
             )
 
         log.info(
@@ -1440,6 +1457,7 @@ async def _set_position_levels(
     sl: Optional[float],
     tp: Optional[float],
     candle_entry: Optional[float] = None,
+    bot_id: Optional[str] = None,
 ) -> None:
     """Update the most recently opened position for symbol with SL/TP prices.
 
@@ -1454,15 +1472,15 @@ async def _set_position_levels(
         symbol=symbol,
         portfolio_id=str(portfolio_id),
     )
+    _levels_q = select(Position).where(
+        Position.portfolio_id == portfolio_id,
+        Position.symbol       == symbol,
+        Position.is_open      == True,  # noqa: E712
+    )
+    if bot_id:
+        _levels_q = _levels_q.where(Position.bot_id == bot_id)
     result = await db.execute(
-        select(Position)
-        .where(
-            Position.portfolio_id == portfolio_id,
-            Position.symbol == symbol,
-            Position.is_open == True,  # noqa: E712
-        )
-        .order_by(Position.opened_at.desc())
-        .limit(1)
+        _levels_q.order_by(Position.opened_at.desc()).limit(1)
     )
     pos: Optional[Position] = result.scalar_one_or_none()
     if pos:
@@ -1547,6 +1565,7 @@ async def _close_position_directly(
         filled_quantity=position.quantity,
         avg_fill_price=price,
         status="filled",
+        bot_id=getattr(position, "bot_id", None),
         created_at=now,
         updated_at=now,
     )
@@ -1563,6 +1582,7 @@ async def _close_position_directly(
         price=price,
         commission=Decimal("0"),
         realized_pnl=pnl,
+        bot_id=getattr(position, "bot_id", None),
         executed_at=now,
         created_at=now,
     )
@@ -1688,6 +1708,7 @@ async def _evaluate_open_positions(
     portfolio: Portfolio,
     symbol: str,
     risk: Optional[RiskSettings],
+    bot_id: Optional[str] = None,
 ) -> tuple[List[str], List[Position]]:
     """
     Evaluate TP/SL / trailing-stop / break-even for every open position on
@@ -1776,13 +1797,14 @@ async def _evaluate_open_positions(
         )
 
     # ── 3. Load open positions ────────────────────────────────────────────────
-    pos_result = await db.execute(
-        select(Position).where(
-            Position.portfolio_id == portfolio.id,
-            Position.symbol       == symbol,
-            Position.is_open      == True,  # noqa: E712
-        )
+    _pos_q = select(Position).where(
+        Position.portfolio_id == portfolio.id,
+        Position.symbol       == symbol,
+        Position.is_open      == True,  # noqa: E712
     )
+    if bot_id:
+        _pos_q = _pos_q.where(Position.bot_id == bot_id)
+    pos_result = await db.execute(_pos_q)
     open_positions: List[Position] = list(pos_result.scalars().all())
 
     if not open_positions:
