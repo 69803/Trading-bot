@@ -1,44 +1,44 @@
 """
-ScalperX Strategy Engine — Mean Reversion
-==========================================
+Mean Reversion Strategy Engine
+===============================
 Mean Reversion • Forex • 15m signal / 5m entry
 
-Core principle: price strays from its average but always returns.
+Core principle: price strays from its statistical average but always returns.
 Operate ONLY in ranging markets (ADX < 25). Never trade trending markets.
 
 Entry Conditions (ALL must be met simultaneously):
 
-LONG:
+LONG — reversal from lower extreme:
   1. ADX < 25                    — range market confirmed
-  2. close <= BB lower band      — price at extreme low
-  3. RSI < 30                    — oversold
-  4. Stochastic %K < 20 + bullish cross (%K crossed above %D)
-  5. Current candle closes INSIDE the lower band (close > bb_lower)
-  6. ATR within normal range     — no news spike
+  2. BB Width within normal range (not expanding > 150% avg)
+  3. candle LOW  <= BB lower band  — price touched the extreme
+  4. RSI < 30                    — oversold confirmed
+  5. Stochastic %K < 20 + bullish cross (%K crossed above %D)
+  6. Current candle CLOSES above the lower band (close > bb_lower)
+  7. ATR within normal range     — no news spike
 
-SHORT:
+SHORT — reversal from upper extreme:
   1. ADX < 25
-  2. close >= BB upper band
-  3. RSI > 70                    — overbought
-  4. Stochastic %K > 80 + bearish cross (%K crossed below %D)
-  5. Current candle closes INSIDE the upper band (close < bb_upper)
-  6. ATR within normal range
+  2. BB Width within normal range
+  3. candle HIGH >= BB upper band — price touched the extreme
+  4. RSI > 70                    — overbought confirmed
+  5. Stochastic %K > 80 + bearish cross (%K crossed below %D)
+  6. Current candle CLOSES below the upper band (close < bb_upper)
+  7. ATR within normal range
 
 Risk:
   SL = ATR × 2.0
-  TP1 = BB middle (SMA 20) — primary target
-  TP  = ATR × 3.0           — full target (same object as risk_manager TP)
+  TP = ATR × 3.0  → ~1:1.5 R:R targeting SMA20
 
-Emergency exits:
+Emergency exits (handled by bot_service):
   - ADX > 30 while in trade → close
   - 2 candles close outside band → close
-  - Candle closes outside band on entry candle → do NOT enter
 """
 from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from app.core.logger import get_logger
 from app.schemas.technical import IndicatorValues, TechnicalSignal
@@ -71,11 +71,15 @@ LONG_RSI_MAX   = 30.0   # oversold threshold
 SHORT_RSI_MIN  = 70.0   # overbought threshold
 
 # Stochastic thresholds
-STOCH_OVERSOLD    = 20.0
-STOCH_OVERBOUGHT  = 80.0
+STOCH_OVERSOLD   = 20.0
+STOCH_OVERBOUGHT = 80.0
 
 # ATR spike gate
 ATR_SPIKE_MULT = 2.0
+
+# BB Width filter: bands expanding too fast = possible trend breakout
+BB_WIDTH_EXPAND_MAX = 1.50   # if width > 150% of its average → avoid entry
+BB_WIDTH_LOOKBACK   = 20     # periods to compute average width
 
 # ATR multipliers for risk_manager (exported)
 ATR_SL_MULT = 2.0
@@ -93,7 +97,7 @@ def analyze(
     timeframe: str = "15m",
 ) -> TechnicalSignal:
     """
-    Run the ScalperX Mean Reversion strategy.
+    Run the Mean Reversion strategy.
 
     Returns TechnicalSignal with direction BUY / SELL / HOLD.
     """
@@ -106,7 +110,6 @@ def analyze(
         return _hold(symbol, timeframe, candles, now, reason)
 
     closes = [float(c["close"]) for c in candles]
-    opens  = [float(c["open"])  for c in candles]
     highs  = [float(c["high"])  for c in candles]
     lows   = [float(c["low"])   for c in candles]
 
@@ -118,15 +121,17 @@ def analyze(
     atr_s                             = calculate_atr(highs, lows, closes, ATR_PERIOD)
 
     # ── Current values ────────────────────────────────────────────────────────
-    price     = closes[-1]
-    bb_upper  = _last(bb_upper_s)
-    bb_mid    = _last(bb_mid_s)
-    bb_lower  = _last(bb_lower_s)
-    rsi       = _last(rsi_s)
-    stoch_k   = _last(stoch_k_s)
-    stoch_d   = _last(stoch_d_s)
-    adx       = _last(adx_s)
-    atr       = _last(atr_s)
+    price    = closes[-1]
+    high_cur = highs[-1]
+    low_cur  = lows[-1]
+    bb_upper = _last(bb_upper_s)
+    bb_mid   = _last(bb_mid_s)
+    bb_lower = _last(bb_lower_s)
+    rsi      = _last(rsi_s)
+    stoch_k  = _last(stoch_k_s)
+    stoch_d  = _last(stoch_d_s)
+    adx      = _last(adx_s)
+    atr      = _last(atr_s)
 
     # Guard: NaN in core indicators
     core = {"bb_upper": bb_upper, "bb_mid": bb_mid, "bb_lower": bb_lower,
@@ -142,19 +147,35 @@ def analyze(
     atr_avg    = sum(valid_atrs[-ATR_PERIOD:]) / max(len(valid_atrs[-ATR_PERIOD:]), 1)
     atr_spike  = bool(atr is not None and atr > atr_avg * ATR_SPIKE_MULT)
 
-    # ── Stochastic cross ──────────────────────────────────────────────────────
+    # ── BB Width filter ───────────────────────────────────────────────────────
+    # Measure if bands are expanding (possible trend starting → avoid entry)
+    bb_widths: List[float] = []
+    for u, m, l in zip(bb_upper_s, bb_mid_s, bb_lower_s):
+        if u is None or m is None or l is None:
+            continue
+        if math.isnan(u) or math.isnan(m) or math.isnan(l) or m == 0:
+            continue
+        bb_widths.append(u - l)
+
+    bb_width_cur = bb_upper - bb_lower
+    if len(bb_widths) >= BB_WIDTH_LOOKBACK:
+        bb_width_avg = sum(bb_widths[-BB_WIDTH_LOOKBACK:]) / BB_WIDTH_LOOKBACK
+    else:
+        bb_width_avg = bb_width_cur  # not enough data → neutral
+
+    bb_width_ratio = (bb_width_cur / bb_width_avg) if bb_width_avg > 0 else 1.0
+    bb_expanding   = bb_width_ratio > BB_WIDTH_EXPAND_MAX
+
+    # ── Stochastic crosses ────────────────────────────────────────────────────
     stoch_bull_cross = _stoch_crossed_up(stoch_k_s, stoch_d_s, lookback=3)
     stoch_bear_cross = _stoch_crossed_down(stoch_k_s, stoch_d_s, lookback=3)
 
-    # ── Bollinger Band width ratio (for logging) ──────────────────────────────
-    bb_width_pct = ((bb_upper - bb_lower) / bb_mid * 100) if bb_mid and bb_mid != 0 else 0.0
-
     log.info(
-        "SCALPERX SNAPSHOT",
+        "MEAN REVERSION SNAPSHOT",
         symbol=symbol, candles=n,
         price=round(price, 5),
         bb_upper=round(bb_upper, 5), bb_mid=round(bb_mid, 5), bb_lower=round(bb_lower, 5),
-        bb_width_pct=round(bb_width_pct, 2),
+        bb_width_ratio=round(bb_width_ratio, 2), bb_expanding=bb_expanding,
         rsi=round(rsi, 2),
         stoch_k=round(stoch_k, 2) if stoch_k else None,
         stoch_d=round(stoch_d, 2) if stoch_d else None,
@@ -165,43 +186,59 @@ def analyze(
         stoch_bear_cross=stoch_bear_cross,
     )
 
-    # ── Hard gate: ADX too high → trending market, DO NOT operate ────────────
+    # ── Hard gate: trending market ────────────────────────────────────────────
     if adx >= ADX_RANGE_MAX:
-        reason = f"HOLD — ADX {adx:.1f} >= {ADX_RANGE_MAX} (trending market, Mean Reversion disabled)"
-        log.info("SCALPERX: " + reason, symbol=symbol)
+        reason = (
+            f"HOLD — ADX {adx:.1f} >= {ADX_RANGE_MAX} "
+            f"(trending market — Mean Reversion disabled)"
+        )
+        log.info("MEAN REVERSION: " + reason, symbol=symbol)
+        return _hold(symbol, timeframe, candles, now, reason)
+
+    # ── Hard gate: BB bands expanding → possible breakout ─────────────────────
+    if bb_expanding:
+        reason = (
+            f"HOLD — BB width ratio {bb_width_ratio:.2f} > {BB_WIDTH_EXPAND_MAX} "
+            f"(bands expanding — possible trend forming, no entry)"
+        )
+        log.info("MEAN REVERSION: " + reason, symbol=symbol)
         return _hold(symbol, timeframe, candles, now, reason)
 
     # ── LONG conditions ───────────────────────────────────────────────────────
+    # low_cur  <= bb_lower → candle touched/pierced the lower band (wick or body)
+    # price    >  bb_lower → candle closed back INSIDE the band (reversal confirmed)
     long_conds = {
-        "adx_range":         adx < ADX_RANGE_MAX,
-        "price_at_bb_lower": price <= bb_lower,
-        "rsi_oversold":      rsi < LONG_RSI_MAX,
-        "stoch_oversold":    stoch_k is not None and stoch_k < STOCH_OVERSOLD,
-        "stoch_bull_cross":  stoch_bull_cross,
-        "candle_inside":     price > bb_lower,   # closes back inside the band
-        "atr_normal":        not atr_spike,
+        "adx_range":           adx < ADX_RANGE_MAX,
+        "bb_not_expanding":    not bb_expanding,
+        "low_touched_band":    low_cur <= bb_lower,
+        "closed_inside_band":  price > bb_lower,
+        "rsi_oversold":        rsi < LONG_RSI_MAX,
+        "stoch_oversold":      stoch_k is not None and stoch_k < STOCH_OVERSOLD,
+        "stoch_bull_cross":    stoch_bull_cross,
+        "atr_normal":          not atr_spike,
     }
     long_ok = all(long_conds.values())
 
     # ── SHORT conditions ──────────────────────────────────────────────────────
+    # high_cur >= bb_upper → candle touched/pierced the upper band
+    # price    <  bb_upper → candle closed back INSIDE the band
     short_conds = {
-        "adx_range":          adx < ADX_RANGE_MAX,
-        "price_at_bb_upper":  price >= bb_upper,
-        "rsi_overbought":     rsi > SHORT_RSI_MIN,
-        "stoch_overbought":   stoch_k is not None and stoch_k > STOCH_OVERBOUGHT,
-        "stoch_bear_cross":   stoch_bear_cross,
-        "candle_inside":      price < bb_upper,  # closes back inside the band
-        "atr_normal":         not atr_spike,
+        "adx_range":           adx < ADX_RANGE_MAX,
+        "bb_not_expanding":    not bb_expanding,
+        "high_touched_band":   high_cur >= bb_upper,
+        "closed_inside_band":  price < bb_upper,
+        "rsi_overbought":      rsi > SHORT_RSI_MIN,
+        "stoch_overbought":    stoch_k is not None and stoch_k > STOCH_OVERBOUGHT,
+        "stoch_bear_cross":    stoch_bear_cross,
+        "atr_normal":          not atr_spike,
     }
     short_ok = all(short_conds.values())
 
     log.info(
-        "SCALPERX CONDITIONS",
+        "MEAN REVERSION CONDITIONS",
         symbol=symbol,
-        long=long_conds,
-        short=short_conds,
-        long_ok=long_ok,
-        short_ok=short_ok,
+        long=long_conds, short=short_conds,
+        long_ok=long_ok, short_ok=short_ok,
     )
 
     # ── Direction ─────────────────────────────────────────────────────────────
@@ -211,28 +248,28 @@ def analyze(
         direction  = "BUY"
         confidence = _confidence(rsi, stoch_k, adx, bullish=True)
         reasons = [
-            f"ScalperX LONG (Mean Reversion): price({price:.5f}) at BB lower({bb_lower:.5f}) ✓",
+            f"Mean Reversion LONG: low({low_cur:.5f}) touched BB lower({bb_lower:.5f}) ✓",
+            f"Closed back inside: price({price:.5f}) > BB lower({bb_lower:.5f}) ✓",
             f"RSI {rsi:.1f} < {LONG_RSI_MAX} (oversold) ✓",
             f"Stochastic %K {stoch_k:.1f} < {STOCH_OVERSOLD} + bullish cross ✓",
-            f"ADX {adx:.1f} < {ADX_RANGE_MAX} (range confirmed) ✓",
-            f"ATR normal ✓  candle closed inside band ✓",
+            f"ADX {adx:.1f} < {ADX_RANGE_MAX} (range) ✓  BB width ratio {bb_width_ratio:.2f} ✓  ATR normal ✓",
             f"TP target: SMA20 = {bb_mid:.5f}  |  SL = ATR × {ATR_SL_MULT}",
         ]
-        log.info("SCALPERX DECISION: BUY", symbol=symbol, confidence=confidence,
+        log.info("MEAN REVERSION DECISION: BUY", symbol=symbol, confidence=confidence,
                  rsi=round(rsi, 2), adx=round(adx, 2))
 
     elif short_ok:
         direction  = "SELL"
         confidence = _confidence(rsi, stoch_k, adx, bullish=False)
         reasons = [
-            f"ScalperX SHORT (Mean Reversion): price({price:.5f}) at BB upper({bb_upper:.5f}) ✓",
+            f"Mean Reversion SHORT: high({high_cur:.5f}) touched BB upper({bb_upper:.5f}) ✓",
+            f"Closed back inside: price({price:.5f}) < BB upper({bb_upper:.5f}) ✓",
             f"RSI {rsi:.1f} > {SHORT_RSI_MIN} (overbought) ✓",
             f"Stochastic %K {stoch_k:.1f} > {STOCH_OVERBOUGHT} + bearish cross ✓",
-            f"ADX {adx:.1f} < {ADX_RANGE_MAX} (range confirmed) ✓",
-            f"ATR normal ✓  candle closed inside band ✓",
+            f"ADX {adx:.1f} < {ADX_RANGE_MAX} (range) ✓  BB width ratio {bb_width_ratio:.2f} ✓  ATR normal ✓",
             f"TP target: SMA20 = {bb_mid:.5f}  |  SL = ATR × {ATR_SL_MULT}",
         ]
-        log.info("SCALPERX DECISION: SELL", symbol=symbol, confidence=confidence,
+        log.info("MEAN REVERSION DECISION: SELL", symbol=symbol, confidence=confidence,
                  rsi=round(rsi, 2), adx=round(adx, 2))
 
     else:
@@ -245,19 +282,19 @@ def analyze(
             f"LONG failed: {failed_long}",
             f"SHORT failed: {failed_short}",
         ]
-        log.info("SCALPERX DECISION: HOLD", symbol=symbol,
+        log.info("MEAN REVERSION DECISION: HOLD", symbol=symbol,
                  failed_long=failed_long, failed_short=failed_short)
 
     indicators = IndicatorValues(
         price          = round(price, 5),
         rsi            = round(rsi, 2),
-        ema_fast       = round(bb_lower, 5),   # repurpose: bb_lower
-        ema_slow       = round(bb_upper, 5),   # repurpose: bb_upper
-        macd           = round(bb_mid, 5),     # repurpose: bb_mid / SMA20
+        ema_fast       = round(bb_lower, 5),   # repurposed: bb_lower
+        ema_slow       = round(bb_upper, 5),   # repurposed: bb_upper
+        macd           = round(bb_mid, 5),     # repurposed: bb_mid / SMA20
         macd_signal    = round(stoch_k if stoch_k else 0.0, 2),
         macd_histogram = round(stoch_d if stoch_d else 0.0, 2),
         atr            = round(atr if atr and not math.isnan(atr) else 0.0, 6),
-        volume_ratio   = 1.0,
+        volume_ratio   = round(bb_width_ratio, 2),  # BB width ratio for monitoring
         adx            = round(adx, 2),
     )
 
@@ -283,28 +320,26 @@ def _confidence(rsi: float, stoch_k: Optional[float], adx: float, bullish: bool)
     """60 base + bonuses for extreme RSI, extreme Stochastic, and low ADX."""
     score = 60
     if bullish:
-        if rsi < 25:       score += 15  # strong oversold
+        if rsi < 25:       score += 15   # strong oversold
         elif rsi < 30:     score += 8
-        if stoch_k is not None and stoch_k < 10:  score += 15
-        elif stoch_k is not None and stoch_k < 20: score += 8
+        if stoch_k is not None and stoch_k < 10:   score += 15
+        elif stoch_k is not None and stoch_k < 20:  score += 8
     else:
-        if rsi > 75:       score += 15  # strong overbought
+        if rsi > 75:       score += 15   # strong overbought
         elif rsi > 70:     score += 8
-        if stoch_k is not None and stoch_k > 90:  score += 15
-        elif stoch_k is not None and stoch_k > 80: score += 8
-    if adx < 15:           score += 10  # very clean range
+        if stoch_k is not None and stoch_k > 90:   score += 15
+        elif stoch_k is not None and stoch_k > 80:  score += 8
+    if adx < 15:           score += 10   # very clean range
     return min(100, score)
 
 
 def _stoch_crossed_up(k: List[float], d: List[float], lookback: int = 3) -> bool:
-    """True if %K crossed above %D in the last *lookback* candles."""
     n = min(len(k), len(d), lookback + 1)
     if n < 2:
         return False
     ks, ds = k[-n:], d[-n:]
     for i in range(1, len(ks)):
-        kp, dp = ks[i-1], ds[i-1]
-        kc, dc = ks[i],   ds[i]
+        kp, dp, kc, dc = ks[i-1], ds[i-1], ks[i], ds[i]
         if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in (kp, dp, kc, dc)):
             continue
         if kp <= dp and kc > dc:
@@ -313,14 +348,12 @@ def _stoch_crossed_up(k: List[float], d: List[float], lookback: int = 3) -> bool
 
 
 def _stoch_crossed_down(k: List[float], d: List[float], lookback: int = 3) -> bool:
-    """True if %K crossed below %D in the last *lookback* candles."""
     n = min(len(k), len(d), lookback + 1)
     if n < 2:
         return False
     ks, ds = k[-n:], d[-n:]
     for i in range(1, len(ks)):
-        kp, dp = ks[i-1], ds[i-1]
-        kc, dc = ks[i],   ds[i]
+        kp, dp, kc, dc = ks[i-1], ds[i-1], ks[i], ds[i]
         if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in (kp, dp, kc, dc)):
             continue
         if kp >= dp and kc < dc:

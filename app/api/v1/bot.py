@@ -350,7 +350,7 @@ async def activate_trendmaster(
 
 # ── POST /activate/scalperx ───────────────────────────────────────────────────
 
-@router.post("/activate/scalperx", summary="Configure and start the ScalperX Mean Reversion bot")
+@router.post("/activate/scalperx", summary="Configure and start the Mean Reversion bot")
 async def activate_scalperx(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
@@ -363,7 +363,7 @@ async def activate_scalperx(
     config = await _get_or_create_strategy(current_user, db)
     risk   = await _get_or_create_risk(current_user, db)
 
-    # Strategy params (ScalperX signature: ema_fast=20, ema_slow=5)
+    # Strategy params (Mean Reversion signature: ema_fast=20, ema_slow=5)
     config.ema_fast              = 20   # BB period
     config.ema_slow              = 5    # Stochastic K period
     config.rsi_period            = 14
@@ -389,14 +389,14 @@ async def activate_scalperx(
     state = await _get_or_create_bot_state(current_user, db)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
-    state.last_log    = "ScalperX activated — Mean Reversion on EUR/USD, EUR/GBP, USD/CHF, AUD/NZD"
+    state.last_log    = "Mean Reversion activated — EUR/USD, EUR/GBP, USD/CHF, AUD/NZD"
     if hasattr(state, "last_error"):
         state.last_error = None
 
     await db.commit()
     return {
-        "message":   "ScalperX activated",
-        "strategy":  "scalperx",
+        "message":   "Mean Reversion activated",
+        "strategy":  "mean_reversion",
         "symbols":   list(config.symbols),
         "timeframe": "15m",
         "is_running": True,
