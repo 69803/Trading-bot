@@ -513,6 +513,61 @@ async def activate_safeguard(
     }
 
 
+# ── POST /activate/combo ─────────────────────────────────────────────────────
+
+@router.post("/activate/combo", summary="Configure and start the MasterBot multi-strategy system")
+async def activate_combo(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    One-shot endpoint:
+      1. Configures MasterBot with all 6 forex pairs (covers all strategies)
+      2. Balanced risk: 1% per trade, 3% max simultaneous exposure
+      3. Starts the bot
+    """
+    config = await _get_or_create_strategy(current_user, db)
+    risk   = await _get_or_create_risk(current_user, db)
+
+    # Strategy params (MasterBot signature: ema_fast=9, ema_slow=200)
+    config.ema_fast              = 9
+    config.ema_slow              = 200
+    config.rsi_period            = 14
+    config.rsi_overbought        = Decimal("70")
+    config.rsi_oversold          = Decimal("30")
+    config.symbols               = ["EUR/USD", "GBP/USD", "AUD/JPY", "GBP/JPY", "USD/JPY", "NZD/JPY"]
+    config.asset_classes         = ["forex"]
+    config.investment_amount     = Decimal("200")
+    config.run_interval_seconds  = 3600   # 1h — multi-strategy needs higher TF
+    config.per_symbol_max_positions = 1
+    config.allow_buy             = True
+    config.allow_sell            = True
+    config.cooldown_seconds      = 3600
+
+    # Risk params (balanced: 1% per trade, max 3% total)
+    risk.stop_loss_pct           = Decimal("0.015")
+    risk.take_profit_pct         = Decimal("0.03")
+    risk.max_open_positions      = 3
+    risk.max_daily_loss_pct      = Decimal("0.03")   # 3% daily DD → stop
+    risk.max_position_size_pct   = Decimal("0.10")
+
+    state = await _get_or_create_bot_state(current_user, db)
+    state.is_running  = True
+    state.started_at  = datetime.now(timezone.utc)
+    state.last_log    = "MasterBot activated — Multi-Strategy on EUR/USD, GBP/USD, AUD/JPY, GBP/JPY, USD/JPY, NZD/JPY"
+    if hasattr(state, "last_error"):
+        state.last_error = None
+
+    await db.commit()
+    return {
+        "message":    "MasterBot activated",
+        "strategy":   "combo",
+        "symbols":    list(config.symbols),
+        "timeframe":  "1h",
+        "is_running": True,
+    }
+
+
 # ── POST /stop ────────────────────────────────────────────────────────────────
 
 @router.post("/stop", summary="Stop the auto-trading bot")
