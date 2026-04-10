@@ -40,7 +40,7 @@ from app.core.config import settings
 from app.schemas.sentiment import SentimentResult
 from app.services import order_service
 from app.services import decision_engine, risk_manager, sentiment_engine, technical_engine
-from app.services.strategies import trendmaster_engine, mean_reversion_engine, masterbot_engine
+from app.services.strategies import trendmaster_engine, mean_reversion_engine, momentum_engine, masterbot_engine
 from app.services.analytics_service import (
     count_consecutive_losses,
     count_trades_last_hour,
@@ -680,6 +680,7 @@ async def _process_symbol(
     # Strategy detection by EMA signature
     _is_trendmaster = (int(config.ema_fast) == 9  and int(config.ema_slow) == 21)
     _is_mean_rev    = (int(config.ema_fast) == 20 and int(config.ema_slow) == 5)
+    _is_momentum    = (int(config.ema_fast) == 10 and int(config.ema_slow) == 100)
     _is_apex        = (int(config.ema_fast) == 9  and int(config.ema_slow) == 200)
     _timeframe = "5m" if _is_trendmaster else "15m" if _is_mean_rev else "1h"
     candles = await _market_data_router_for_candles.get_candles(symbol, _timeframe, limit=CANDLE_LIMIT)
@@ -743,6 +744,12 @@ async def _process_symbol(
         )
         _atr_sl_mult = mean_reversion_engine.ATR_SL_MULT
         _atr_tp_mult = mean_reversion_engine.ATR_TP_MULT
+    elif _is_momentum:
+        technical = momentum_engine.analyze(
+            symbol=symbol, candles=candles, timeframe="1h",
+        )
+        _atr_sl_mult = momentum_engine.ATR_SL_MULT
+        _atr_tp_mult = momentum_engine.ATR_TP_MULT
     elif _is_apex:
         technical = masterbot_engine.analyze(
             symbol=symbol, candles=candles, timeframe="1h",

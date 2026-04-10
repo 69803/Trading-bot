@@ -294,6 +294,85 @@ def calculate_adx(
     return result
 
 
+def calculate_adx_full(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    period: int = 14,
+):
+    """
+    Calculate ADX + DI+ + DI- (all three directional movement indicators).
+
+    Returns:
+        Tuple of three equal-length lists: (adx, di_plus, di_minus)
+        Values are NaN until enough history exists (period * 2 + 1 candles).
+    """
+    if period <= 0:
+        raise ValueError(f"period must be > 0, got {period}")
+
+    n = len(closes)
+    nan_list = [float("nan")] * n
+    if n < period * 2 + 1:
+        return nan_list[:], nan_list[:], nan_list[:]
+
+    highs_a  = np.array(highs,  dtype=float)
+    lows_a   = np.array(lows,   dtype=float)
+    closes_a = np.array(closes, dtype=float)
+
+    tr       = np.zeros(n)
+    tr[0]    = highs_a[0] - lows_a[0]
+    plus_dm  = np.zeros(n)
+    minus_dm = np.zeros(n)
+    for i in range(1, n):
+        tr[i]       = max(highs_a[i] - lows_a[i],
+                          abs(highs_a[i]  - closes_a[i - 1]),
+                          abs(lows_a[i]   - closes_a[i - 1]))
+        up          = highs_a[i] - highs_a[i - 1]
+        down        = lows_a[i - 1] - lows_a[i]
+        plus_dm[i]  = up   if (up   > down and up   > 0) else 0.0
+        minus_dm[i] = down if (down > up   and down > 0) else 0.0
+
+    def _wilder(arr: np.ndarray) -> np.ndarray:
+        out      = np.full(n, np.nan)
+        out[period] = arr[1: period + 1].sum()
+        for i in range(period + 1, n):
+            out[i] = out[i - 1] - out[i - 1] / period + arr[i]
+        return out
+
+    sm_tr    = _wilder(tr)
+    sm_plus  = _wilder(plus_dm)
+    sm_minus = _wilder(minus_dm)
+
+    di_plus  = np.full(n, np.nan)
+    di_minus = np.full(n, np.nan)
+    dx       = np.full(n, np.nan)
+    for i in range(period, n):
+        if sm_tr[i] > 0:
+            di_plus[i]  = 100.0 * sm_plus[i]  / sm_tr[i]
+            di_minus[i] = 100.0 * sm_minus[i] / sm_tr[i]
+            dsum        = di_plus[i] + di_minus[i]
+            if dsum > 0:
+                dx[i] = 100.0 * abs(di_plus[i] - di_minus[i]) / dsum
+
+    seed_end = period * 2
+    if seed_end >= n:
+        return nan_list[:], di_plus.tolist(), di_minus.tolist()
+
+    seed_vals = [dx[i] for i in range(period, seed_end + 1) if not np.isnan(dx[i])]
+    if len(seed_vals) < period:
+        return nan_list[:], di_plus.tolist(), di_minus.tolist()
+
+    adx_out   = np.full(n, np.nan)
+    adx_val   = sum(seed_vals[:period]) / period
+    adx_out[seed_end] = adx_val
+    for i in range(seed_end + 1, n):
+        if not np.isnan(dx[i]):
+            adx_val   = (adx_val * (period - 1) + dx[i]) / period
+            adx_out[i] = adx_val
+
+    return adx_out.tolist(), di_plus.tolist(), di_minus.tolist()
+
+
 def calculate_volume_ratio(volumes: List[float], period: int = 20) -> float:
     """Ratio of the latest candle's volume to the rolling average.
 

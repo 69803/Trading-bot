@@ -458,6 +458,60 @@ async def activate_piphunter(
     }
 
 
+# ── POST /activate/cryptobot ─────────────────────────────────────────────────
+
+@router.post("/activate/cryptobot", summary="Configure and start the Momentum bot")
+async def activate_cryptobot(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    One-shot: configures Momentum params (EMA50/200, RSI10, ADX>25, ROC, MACD)
+    and starts the bot.
+    Detection signature: ema_fast=10, ema_slow=100
+    """
+    config = await _get_or_create_strategy(current_user, db)
+    risk   = await _get_or_create_risk(current_user, db)
+
+    # Strategy params (Momentum signature: ema_fast=10, ema_slow=100)
+    config.ema_fast              = 10    # RSI period proxy
+    config.ema_slow              = 100   # distinctive momentum signature
+    config.rsi_period            = 10    # shorter RSI for momentum
+    config.rsi_overbought        = Decimal("75")
+    config.rsi_oversold          = Decimal("50")   # momentum zone floor
+    config.symbols               = ["GBP/USD", "EUR/USD", "AUD/USD", "USD/JPY", "NZD/USD"]
+    config.asset_classes         = ["forex"]
+    config.investment_amount     = Decimal("200")
+    config.run_interval_seconds  = 3600   # 1h — matches signal timeframe
+    config.per_symbol_max_positions = 1
+    config.allow_buy             = True
+    config.allow_sell            = True
+    config.cooldown_seconds      = 7200   # 2h cooldown — this is not scalping
+
+    # Risk params (momentum: wider SL, no fixed TP, 1–1.5% per trade)
+    risk.stop_loss_pct           = Decimal("0.015")  # ATR × 1.5 fallback
+    risk.take_profit_pct         = Decimal("0.06")   # ATR × 4.0 hard cap
+    risk.max_open_positions      = 2                 # max 2 momentum positions
+    risk.max_daily_loss_pct      = Decimal("0.02")   # 2% daily DD limit
+    risk.max_position_size_pct   = Decimal("0.15")
+
+    state = await _get_or_create_bot_state(current_user, db)
+    state.is_running  = True
+    state.started_at  = datetime.now(timezone.utc)
+    state.last_log    = "Momentum activated — GBP/USD, EUR/USD, AUD/USD, USD/JPY, NZD/USD"
+    if hasattr(state, "last_error"):
+        state.last_error = None
+
+    await db.commit()
+    return {
+        "message":   "Momentum activated",
+        "strategy":  "momentum",
+        "symbols":   list(config.symbols),
+        "timeframe": "1h",
+        "is_running": True,
+    }
+
+
 # ── POST /activate/safeguard ──────────────────────────────────────────────────
 
 @router.post("/activate/safeguard", summary="Configure and start the SafeGuard Carry Trade bot")
