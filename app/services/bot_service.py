@@ -1485,8 +1485,19 @@ async def _close_position_directly(
     - Credits portfolio: returns investment_amount + PnL
     - Creates a filled Order + Trade record for the close
     """
-    now   = datetime.now(timezone.utc)
-    price = Decimal(str(current_price))
+    now        = datetime.now(timezone.utc)
+    raw_price  = Decimal(str(current_price))
+
+    # A1 FIX: apply exit slippage symmetric with order_service entry slippage.
+    # Long close = sell at market → bid is lower than mid → subtract slippage.
+    # Short close = buy at market → ask is higher than mid → add slippage.
+    # SL/TP trigger levels are still evaluated against raw prices (unchanged);
+    # slippage is only applied to the fill price used for PnL and accounting.
+    _slip = order_service.SLIPPAGE_RATE
+    if position.side == "long":
+        price = (raw_price * (Decimal("1") - _slip)).quantize(Decimal("0.00001"))
+    else:
+        price = (raw_price * (Decimal("1") + _slip)).quantize(Decimal("0.00001"))
 
     if position.side == "long":
         pnl = (price - position.avg_entry_price) * position.quantity
@@ -1535,8 +1546,10 @@ async def _close_position_directly(
 
     invest   = position.investment_amount or (position.avg_entry_price * position.quantity)
     proceeds = invest + pnl
-    if proceeds > Decimal("0"):
-        portfolio.cash_balance += proceeds
+    # A2 FIX: always credit proceeds regardless of sign.
+    # The old guard (proceeds > 0) silently discarded the refund when a loss
+    # exceeded the invested amount, leaving cash_balance artificially high.
+    portfolio.cash_balance += proceeds
     portfolio.realized_pnl = (portfolio.realized_pnl or Decimal("0")) + pnl
     portfolio.updated_at   = now
 
