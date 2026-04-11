@@ -1,6 +1,13 @@
-"""Alembic async migration environment."""
+"""Alembic migration environment.
 
-import asyncio
+Uses psycopg3 in SYNC mode for migrations — avoids greenlet/async cleanup
+issues that arise when using the async driver with NullPool and Supabase's
+PgBouncer transaction-mode pooler (port 6543).
+
+prepare_threshold=0 disables psycopg3 prepared statements, which are not
+supported by PgBouncer transaction mode.
+"""
+
 import os
 from logging.config import fileConfig
 from dotenv import load_dotenv
@@ -8,9 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # ---------------------------------------------------------------------------
 # Alembic Config object (access to alembic.ini values)
@@ -21,7 +27,10 @@ config = context.config
 # alembic.ini so we never hard-code credentials in version control).
 database_url = os.environ.get("DATABASE_URL")
 if database_url:
+    # Ensure we use the psycopg3 sync driver (not asyncpg).
     database_url = database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+    # Strip the async variant prefix if present.
+    database_url = database_url.replace("postgresql+psycopg_async://", "postgresql+psycopg://")
     config.set_main_option("sqlalchemy.url", database_url)
 
 # Interpret the config file for Python logging.
@@ -60,14 +69,6 @@ target_metadata = Base.metadata
 # Offline migrations (generate SQL without connecting to the DB)
 # ---------------------------------------------------------------------------
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL and not an Engine, though an
-    Engine is acceptable here as well.  By skipping the Engine creation we
-    don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the script output.
-    """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -76,13 +77,12 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
     )
-
     with context.begin_transaction():
         context.run_migrations()
 
 
 # ---------------------------------------------------------------------------
-# Online migrations (connect to DB and run migrations)
+# Online migrations — sync psycopg3, no async/greenlet complexity
 # ---------------------------------------------------------------------------
 def do_run_migrations(connection: Connection) -> None:
     context.configure(
@@ -94,26 +94,22 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
-    """Create an async engine and run migrations within an async context."""
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+def run_migrations_online() -> None:
+    """Run migrations using psycopg3 sync driver.
+
+    Sync is preferred over async for Alembic: simpler lifecycle, no greenlet
+    cleanup issues, and fully compatible with PgBouncer transaction mode when
+    prepare_threshold=0 is set.
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    connectable = create_engine(
+        url,
         poolclass=pool.NullPool,
-        # Disable psycopg3 prepared statements — required when the DATABASE_URL
-        # points to a PgBouncer transaction-mode pooler (e.g. Supabase port 6543).
         connect_args={"prepare_threshold": 0},
     )
-
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-
-    await connectable.dispose()
-
-
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode using asyncio."""
-    asyncio.run(run_async_migrations())
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
+    connectable.dispose()
 
 
 if context.is_offline_mode():
