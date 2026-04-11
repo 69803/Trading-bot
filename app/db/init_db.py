@@ -117,6 +117,7 @@ async def init_db(session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 
 _BOT_ID_DDL = [
+    # ── Add columns ───────────────────────────────────────────────────────────
     "ALTER TABLE bot_states       ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
     "UPDATE bot_states SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
     "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
@@ -127,6 +128,17 @@ _BOT_ID_DDL = [
     "ALTER TABLE orders     ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
     "ALTER TABLE trades     ADD COLUMN IF NOT EXISTS bot_id VARCHAR(20)",
     "ALTER TABLE bot_logs   ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    # ── Drop old single-column unique constraints (they prevent multi-bot) ────
+    # Without this, inserting a 2nd bot row (scalperx, piphunter…) for the
+    # same user violates the user_id-only unique constraint → 500 on activate.
+    "ALTER TABLE bot_states       DROP CONSTRAINT IF EXISTS bot_states_user_id_key",
+    "DROP INDEX                       IF EXISTS ix_bot_states_user_id",
+    "ALTER TABLE strategy_configs DROP CONSTRAINT IF EXISTS strategy_configs_user_id_key",
+    "ALTER TABLE risk_settings    DROP CONSTRAINT IF EXISTS risk_settings_user_id_key",
+    # ── Create composite unique indexes (allow one row per user+bot pair) ─────
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_states_user_bot       ON bot_states       (user_id, bot_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_configs_user_bot ON strategy_configs (user_id, bot_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_settings_user_bot    ON risk_settings    (user_id, bot_id)",
 ]
 
 
