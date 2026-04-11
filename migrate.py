@@ -1,21 +1,11 @@
 """
 Smart migration runner.
 
-Handles the case where tables were created by SQLAlchemy's create_all()
-without Alembic ever running, leaving the DB in a state where:
-  - All tables exist
-  - alembic_version table does NOT exist
-
-In that case we stamp the DB at the current head so Alembic knows the
-schema is already up to date, then run `upgrade head` (which becomes a no-op).
-
-For a brand-new empty database, stamping is skipped and `upgrade head` runs
-all migrations normally.
-
-After Alembic finishes, _ensure_bot_id_columns() runs unconditionally.
-It applies all bot_id schema changes directly using IF NOT EXISTS, so
-the columns are guaranteed to exist even if the Alembic migration was
-recorded as applied without the DDL actually landing.
+After Alembic upgrade finishes, _ensure_bot_id_columns() runs unconditionally
+using one auto-commit transaction per statement.  This guarantees the bot_id
+columns exist even if the Alembic migration was recorded as applied without
+the DDL actually landing (a known failure mode with PgBouncer transaction mode
++ psycopg3 single-transaction DDL batches).
 """
 import os
 import sys
@@ -31,7 +21,8 @@ def main() -> None:
         print("migrate.py: No DATABASE_URL — skipping migrations")
         return
 
-    # psycopg3 sync driver; prepare_threshold=0 for PgBouncer transaction mode
+    # psycopg3 sync driver; prepare_threshold=0 required for PgBouncer
+    # transaction-mode pooler (Supabase port 6543).
     sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
     sync_url = sync_url.replace("postgresql+psycopg_async://", "postgresql+psycopg://")
 
@@ -47,71 +38,97 @@ def main() -> None:
         engine.dispose()
 
     if not has_alembic_version and has_market_candles:
-        # Tables were created by create_all() without Alembic.
-        # Stamp head so `upgrade head` doesn't try to recreate them.
-        print("migrate.py: existing schema detected without alembic_version — stamping to head")
+        print("migrate.py: existing schema without alembic_version — stamping to head")
         command.stamp(cfg, "head")
     elif not has_alembic_version:
         print("migrate.py: fresh database — running all migrations")
     else:
-        print("migrate.py: alembic_version found — applying any pending migrations")
+        print("migrate.py: alembic_version found — applying pending migrations")
 
     command.upgrade(cfg, "head")
 
-    # ── Safety net ─────────────────────────────────────────────────────────────
-    # Apply bot_id columns directly, regardless of what Alembic version tracking
-    # says.  If the columns already exist, IF NOT EXISTS makes every statement
-    # a no-op.  This handles the scenario where a migration was recorded as
-    # applied (alembic_version updated) but the DDL was rolled back.
+    # Safety net: apply bot_id columns with one transaction per statement so
+    # a single failure never aborts the rest.
     _ensure_bot_id_columns(sync_url)
 
-    print("migrate.py: migrations complete")
+    print("migrate.py: done")
+
+
+# ---------------------------------------------------------------------------
+# Each statement gets its own engine.begin() — independent auto-commit.
+# A PgBouncer transaction-mode rollback in one statement never poisons the
+# others.
+# ---------------------------------------------------------------------------
+_BOT_ID_STATEMENTS = [
+    # ── bot_states ────────────────────────────────────────────────────────
+    "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "UPDATE bot_states SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
+    "DROP INDEX IF EXISTS ix_bot_states_user_id",
+    "ALTER TABLE bot_states DROP CONSTRAINT IF EXISTS bot_states_user_id_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_states_user_bot ON bot_states (user_id, bot_id)",
+    # ── strategy_configs ──────────────────────────────────────────────────
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "UPDATE strategy_configs SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
+    "ALTER TABLE strategy_configs DROP CONSTRAINT IF EXISTS strategy_configs_user_id_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_configs_user_bot ON strategy_configs (user_id, bot_id)",
+    # ── risk_settings ─────────────────────────────────────────────────────
+    "ALTER TABLE risk_settings ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "UPDATE risk_settings SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
+    "ALTER TABLE risk_settings DROP CONSTRAINT IF EXISTS risk_settings_user_id_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_settings_user_bot ON risk_settings (user_id, bot_id)",
+    # ── other tables ──────────────────────────────────────────────────────
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "CREATE INDEX IF NOT EXISTS ix_positions_bot_id ON positions (bot_id)",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "CREATE INDEX IF NOT EXISTS ix_orders_bot_id ON orders (bot_id)",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS bot_id VARCHAR(20)",
+    "CREATE INDEX IF NOT EXISTS ix_trades_bot_id ON trades (bot_id)",
+    "ALTER TABLE bot_logs ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "CREATE INDEX IF NOT EXISTS ix_bot_logs_bot_id ON bot_logs (bot_id)",
+]
 
 
 def _ensure_bot_id_columns(sync_url: str) -> None:
-    """Idempotently add bot_id columns to all relevant tables."""
-    statements = [
-        # Tables where bot_id must NOT be NULL — backfill first, then set NOT NULL
-        "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
-        "UPDATE bot_states SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
-        "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
-        "UPDATE strategy_configs SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
-        "ALTER TABLE risk_settings ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
-        "UPDATE risk_settings SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
-        # Tables where bot_id is nullable
-        "ALTER TABLE positions ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
-        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
-        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS bot_id VARCHAR(20)",
-        "ALTER TABLE bot_logs ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
-        # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
-        "CREATE INDEX IF NOT EXISTS ix_positions_bot_id ON positions (bot_id)",
-        "CREATE INDEX IF NOT EXISTS ix_orders_bot_id ON orders (bot_id)",
-        "CREATE INDEX IF NOT EXISTS ix_trades_bot_id ON trades (bot_id)",
-        "CREATE INDEX IF NOT EXISTS ix_bot_logs_bot_id ON bot_logs (bot_id)",
-        # Composite unique indexes replacing the old single-column user_id ones
-        "DROP INDEX IF EXISTS ix_bot_states_user_id",
-        "ALTER TABLE bot_states DROP CONSTRAINT IF EXISTS bot_states_user_id_key",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_states_user_bot ON bot_states (user_id, bot_id)",
-        "ALTER TABLE strategy_configs DROP CONSTRAINT IF EXISTS strategy_configs_user_id_key",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_configs_user_bot ON strategy_configs (user_id, bot_id)",
-        "ALTER TABLE risk_settings DROP CONSTRAINT IF EXISTS risk_settings_user_id_key",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_settings_user_bot ON risk_settings (user_id, bot_id)",
-    ]
+    """Run each DDL statement in its own transaction (engine.begin auto-commits).
 
+    One-transaction-per-statement means a PgBouncer rollback in one step
+    never aborts the remaining steps.
+    """
     engine = create_engine(sync_url, connect_args={"prepare_threshold": 0})
+    errors = []
     try:
-        with engine.connect() as conn:
-            for stmt in statements:
-                try:
+        for stmt in _BOT_ID_STATEMENTS:
+            try:
+                with engine.begin() as conn:
                     conn.execute(text(stmt))
-                except Exception as exc:
-                    # Log but don't abort — most failures here are benign
-                    # (e.g. constraint already exists under a different name).
-                    print(f"migrate.py: _ensure_bot_id_columns warning: {exc}")
-            conn.commit()
-        print("migrate.py: bot_id columns verified")
+                print(f"migrate.py: OK  {stmt[:80]}")
+            except Exception as exc:
+                print(f"migrate.py: WARN {stmt[:80]} — {exc}")
+                errors.append((stmt, exc))
+
+        # Verify the three critical columns actually exist.
+        critical = [
+            ("bot_states", "bot_id"),
+            ("strategy_configs", "bot_id"),
+            ("risk_settings", "bot_id"),
+        ]
+        with engine.connect() as conn:
+            for table, col in critical:
+                row = conn.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :t AND column_name = :c"
+                ), {"t": table, "c": col}).fetchone()
+                if row:
+                    print(f"migrate.py: VERIFIED {table}.{col} EXISTS")
+                else:
+                    print(f"migrate.py: FATAL {table}.{col} MISSING after ensure — aborting")
+                    sys.exit(1)
+
     finally:
         engine.dispose()
+
+    if errors:
+        print(f"migrate.py: {len(errors)} non-fatal warning(s) during _ensure_bot_id_columns")
 
 
 if __name__ == "__main__":
