@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -110,3 +110,42 @@ async def init_db(session: AsyncSession) -> None:
         log.info("Patched admin symbols → ['EURUSD']", user_id=str(admin.id))
 
     log.info("Database seed complete")
+
+
+# ---------------------------------------------------------------------------
+# Schema safety net
+# ---------------------------------------------------------------------------
+
+_BOT_ID_DDL = [
+    "ALTER TABLE bot_states       ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "UPDATE bot_states SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "UPDATE strategy_configs SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
+    "ALTER TABLE risk_settings    ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "UPDATE risk_settings SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
+    "ALTER TABLE positions  ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "ALTER TABLE orders     ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+    "ALTER TABLE trades     ADD COLUMN IF NOT EXISTS bot_id VARCHAR(20)",
+    "ALTER TABLE bot_logs   ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
+]
+
+
+async def ensure_bot_id_columns() -> None:
+    """Idempotently add bot_id columns before any ORM queries touch them.
+
+    Uses the app's async session factory so it runs through the exact same
+    psycopg3 async driver as the rest of the application — no separate sync
+    engine, no greenlet issues, no PgBouncer transaction-mode surprises.
+
+    Each statement gets its own session (independent commit) so a single
+    failure never aborts the rest.
+    """
+    from app.db.session import AsyncSessionFactory
+
+    for stmt in _BOT_ID_DDL:
+        try:
+            async with AsyncSessionFactory() as s:
+                await s.execute(text(stmt))
+                await s.commit()
+        except Exception as exc:
+            log.warning("ensure_bot_id_columns: skipped", stmt=stmt.strip()[:70], error=str(exc))

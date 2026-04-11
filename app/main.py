@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logger import get_logger
-from app.db.init_db import init_db
+from app.db.init_db import ensure_bot_id_columns, init_db
 from app.db.session import AsyncSessionFactory, engine
 from app.scheduler import start_scheduler, stop_scheduler
 
@@ -23,6 +23,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     log.info("Starting up", environment=settings.ENVIRONMENT)
 
     if AsyncSessionFactory is not None:
+        # Ensure bot_id columns exist before the ORM tries to query them.
+        # Each statement commits independently so a single failure never
+        # aborts the rest.  This is a no-op if columns already exist.
+        await ensure_bot_id_columns()
+
         async with AsyncSessionFactory() as session:
             try:
                 await init_db(session)
