@@ -100,6 +100,9 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # Disable psycopg3 prepared statements — required when the DATABASE_URL
+        # points to a PgBouncer transaction-mode pooler (e.g. Supabase port 6543).
+        connect_args={"prepare_threshold": 0},
     )
 
     async with connectable.connect() as connection:
