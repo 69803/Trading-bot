@@ -65,6 +65,8 @@ class PositionOut(BaseModel):
     realized_pnl: Decimal
     created_at: datetime
     updated_at: datetime
+    # null = opened manually by the user; non-null = opened by a bot
+    bot_id: Optional[str] = None
 
     @computed_field  # type: ignore[misc]
     @property
