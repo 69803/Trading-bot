@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     ALPACA_SECRET_KEY: str = ""
     POLYGON_API_KEY: str = ""
 
+    # Broker mirror: when True, filled orders for US equities are also sent
+    # to Alpaca Paper Trading API (paper-api.alpaca.markets) as a side effect.
+    # The internal simulation always runs regardless of this flag.
+    # Set to True in Render once ALPACA_API_KEY and ALPACA_SECRET_KEY are set.
+    ALPACA_BROKER_ENABLED: bool = False
+
     # Forex + Commodities provider (Twelve Data)
     TWELVE_DATA_API_KEY: str = ""
 
