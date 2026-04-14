@@ -68,17 +68,23 @@ async def create_order(
             detail="limit_price is required for limit orders",
         )
 
-    order = await order_service.create_order(
-        db=db,
-        portfolio_id=portfolio.id,
-        user_id=current_user.id,
-        symbol=body.symbol.upper(),
-        side=body.side,
-        order_type=body.order_type,
-        quantity=float(body.quantity) if body.quantity is not None else None,
-        investment_amount=float(body.investment_amount) if body.investment_amount is not None else None,
-        limit_price=float(body.limit_price) if body.limit_price else None,
-    )
+    try:
+        order = await order_service.create_order(
+            db=db,
+            portfolio_id=portfolio.id,
+            user_id=current_user.id,
+            symbol=body.symbol.upper(),
+            side=body.side,
+            order_type=body.order_type,
+            quantity=float(body.quantity) if body.quantity is not None else None,
+            investment_amount=float(body.investment_amount) if body.investment_amount is not None else None,
+            limit_price=float(body.limit_price) if body.limit_price else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
     return order
 
 
