@@ -134,7 +134,10 @@ async def create_order(
 
     # ── Fill market orders immediately ───────────────────────────────────────
     if order_type == "market":
-        raw_price = Decimal(str(await market_data_router.get_current_price(symbol)))
+        try:
+            raw_price = Decimal(str(await market_data_router.get_current_price(symbol)))
+        except Exception as exc:
+            raise ValueError(f"Unable to fetch fill price for {symbol}: {exc}") from exc
 
         if side == "buy":
             fill_price = (raw_price * (Decimal("1") + SLIPPAGE_RATE)).quantize(Decimal("0.00001"))
@@ -207,6 +210,18 @@ async def create_order(
 
         await db.commit()
         await db.refresh(order)
+
+        # ── Alpaca Paper broker mirror (non-blocking) ─────────────────────────
+        # Runs AFTER the internal commit so a failure here never rolls back the
+        # trade.  Only fires for US equities when ALPACA_BROKER_ENABLED=true.
+        from app.services.alpaca_broker import submit_order_to_alpaca
+        await submit_order_to_alpaca(
+            symbol=symbol,
+            side=side,
+            qty=float(qty),
+            notional=float(invest_dec),
+            internal_order_id=str(order.id),
+        )
 
     return order
 
