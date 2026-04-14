@@ -2,6 +2,8 @@
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -15,6 +17,38 @@ from app.schemas.order import OrderCreate, OrderListResponse, OrderOut
 from app.services import order_service
 
 router = APIRouter()
+
+
+def _order_to_out(order: Order) -> OrderOut:
+    """
+    Safely convert an ORM Order to OrderOut without triggering lazy loads.
+
+    The Order.realized_pnl Python @property accesses self.trades (a lazy
+    relationship). When the session is closed or the object is detached after
+    commit, that access raises MissingGreenlet / DetachedInstanceError, which
+    FastAPI's serialize_response turns into a ResponseValidationError (500).
+
+    Newly-created or single-fetched orders never need realized_pnl populated
+    here — the trades list endpoint already eager-loads trades when needed.
+    """
+    return OrderOut(
+        id=order.id,
+        portfolio_id=order.portfolio_id,
+        symbol=order.symbol,
+        side=order.side,
+        order_type=order.order_type,
+        investment_amount=order.investment_amount,
+        quantity=order.quantity,
+        filled_quantity=order.filled_quantity,
+        limit_price=order.limit_price,
+        avg_fill_price=order.avg_fill_price,
+        status=order.status,
+        rejection_reason=order.rejection_reason,
+        created_at=order.created_at,
+        updated_at=order.updated_at,
+        bot_id=order.bot_id,
+        realized_pnl=None,  # avoids lazy-load of Order.trades
+    )
 
 
 async def _get_portfolio_or_404(user: User, db: AsyncSession) -> Portfolio:
@@ -85,7 +119,7 @@ async def create_order(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
-    return order
+    return _order_to_out(order)
 
 
 @router.get("/{order_id}", response_model=OrderOut, summary="Get a single order")
@@ -106,7 +140,7 @@ async def get_order(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
         )
-    return order
+    return _order_to_out(order)
 
 
 @router.delete(
@@ -146,4 +180,4 @@ async def cancel_order(
         if "not found" in msg.lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg)
-    return order
+    return _order_to_out(order)
