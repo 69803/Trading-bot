@@ -159,7 +159,10 @@ async def update_position_prices(db: AsyncSession, portfolio_id: UUID) -> None:
             pos.current_price = Decimal(str(price))
         except Exception:
             pass
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
 
 
 async def take_portfolio_snapshot(db: AsyncSession, portfolio_id: UUID) -> None:

@@ -56,6 +56,8 @@ async def get_portfolio(
 
     # Update live prices then compute unrealised PnL
     await portfolio_service.update_position_prices(db, portfolio.id)
+    # update_position_prices commits → expires all loaded objects; reload portfolio
+    await db.refresh(portfolio)
 
     pos_result = await db.execute(
         select(Position).where(
@@ -152,6 +154,8 @@ async def get_balance(
 ) -> BalanceOut:
     portfolio = await _get_portfolio_or_404(current_user, db)
     await portfolio_service.update_position_prices(db, portfolio.id)
+    # update_position_prices commits → expires all loaded objects; reload portfolio
+    await db.refresh(portfolio)
 
     pos_result = await db.execute(
         select(Position).where(
