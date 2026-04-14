@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import List
+from typing import List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -32,6 +32,43 @@ from app.services import portfolio_service
 from app.services.market_data_router import market_data_router
 
 router = APIRouter()
+
+
+def _position_to_out(p: Position) -> PositionOut:
+    """
+    Safely build PositionOut from scalar column values only.
+
+    Returning raw Position ORM objects to FastAPI's serialize_response
+    triggers Pydantic's from_attributes path, which in SQLAlchemy async
+    can hit expired-attribute / MissingGreenlet errors via the `portfolio`
+    back-ref relationship even though PositionOut doesn't declare it.
+    Constructing PositionOut explicitly reads only scalar columns, which
+    are guaranteed to be in the instance __dict__ after a fresh SELECT.
+
+    realized_pnl is nullable=False in the model but older DB rows may have
+    NULL if the column was added via migration without backfilling; default
+    to Decimal("0") so a single bad row never breaks the whole list.
+    """
+    return PositionOut(
+        id=p.id,
+        portfolio_id=p.portfolio_id,
+        symbol=p.symbol,
+        side=p.side,
+        investment_amount=p.investment_amount,
+        quantity=p.quantity,
+        avg_entry_price=p.avg_entry_price,
+        current_price=p.current_price,
+        stop_loss_price=p.stop_loss_price,
+        take_profit_price=p.take_profit_price,
+        is_open=p.is_open,
+        opened_at=p.opened_at,
+        closed_at=p.closed_at,
+        closed_price=p.closed_price,
+        realized_pnl=p.realized_pnl if p.realized_pnl is not None else Decimal("0"),
+        created_at=p.created_at,
+        updated_at=p.updated_at,
+        bot_id=p.bot_id,
+    )
 
 
 async def _get_portfolio_or_404(user: User, db: AsyncSession) -> Portfolio:
@@ -121,7 +158,7 @@ async def get_positions(
     if bot_id:
         stmt = stmt.where(Position.bot_id == bot_id)
     result = await db.execute(stmt.order_by(Position.opened_at.desc()).limit(limit))
-    return result.scalars().all()
+    return [_position_to_out(p) for p in result.scalars().all()]
 
 
 @router.get(
@@ -314,7 +351,7 @@ async def close_position(
 
     await db.commit()
     await db.refresh(position)
-    return position
+    return _position_to_out(position)
 
 
 @router.delete(
