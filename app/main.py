@@ -50,6 +50,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     twelvedata_loaded = bool(settings.TWELVE_DATA_API_KEY)
     log.info(f"STOCK_PROVIDER={stock_provider}")
     log.info(f"TWELVEDATA_KEY_LOADED={twelvedata_loaded}")
+    log.info(
+        "ALPACA_BROKER config",
+        enabled=settings.ALPACA_BROKER_ENABLED,
+        api_key_loaded=bool(settings.ALPACA_API_KEY),
+        secret_key_loaded=bool(settings.ALPACA_SECRET_KEY),
+    )
     log.info(f"TOTAL_SYMBOLS={len(market_data_router.get_all_symbols())}")
 
     # Probe stock provider (AAPL)

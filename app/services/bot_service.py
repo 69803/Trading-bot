@@ -208,13 +208,14 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
         interval_seconds=60,
     )
 
-    # Dump all open positions so every cycle produces visible evidence that
-    # evaluation is running and shows the exact DB values of TP/SL/side/entry
-    # that will be used — critical for debugging "position never closes" issues.
+    # Dump open positions for THIS bot so every cycle produces visible evidence
+    # that evaluation is running.  Manual positions (bot_id=None) are excluded
+    # — they are never managed by the bot and must not appear in this log.
     _all_open_result = await db.execute(
         select(Position).where(
             Position.portfolio_id == portfolio.id,
             Position.is_open == True,  # noqa: E712
+            Position.bot_id == bot_id,
         )
     )
     _all_open: List[Position] = list(_all_open_result.scalars().all())
