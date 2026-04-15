@@ -167,6 +167,30 @@ _BOT_ID_DDL = [
     # broker_order_id: Alpaca paper-trading UUID stored when a pending order is
     # forwarded so the fill-sync job can poll status directly without scanning.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS broker_order_id   VARCHAR(100)",
+
+    # ── risk_settings: advanced risk-management columns (professional upgrade) ─
+    # Added to the ORM model after the initial schema.  Without them every
+    # SELECT on risk_settings (called by _check_risk_limits on every order)
+    # fails with UndefinedColumn → 500 on POST /orders.
+    "ALTER TABLE risk_settings ADD COLUMN IF NOT EXISTS trailing_stop_pct        NUMERIC(6,4)  NOT NULL DEFAULT 0.0000",
+    "ALTER TABLE risk_settings ADD COLUMN IF NOT EXISTS break_even_trigger_pct   NUMERIC(6,4)  NOT NULL DEFAULT 0.0000",
+    "ALTER TABLE risk_settings ADD COLUMN IF NOT EXISTS max_consecutive_losses   INTEGER       NOT NULL DEFAULT 0",
+    "ALTER TABLE risk_settings ADD COLUMN IF NOT EXISTS max_trades_per_hour      INTEGER       NOT NULL DEFAULT 0",
+    "ALTER TABLE risk_settings ADD COLUMN IF NOT EXISTS volatility_sizing_enabled BOOLEAN      NOT NULL DEFAULT FALSE",
+
+    # ── strategy_configs: new columns added in professional upgrade ───────────
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS asset_classes          JSON",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS investment_amount      NUMERIC(18,8) NOT NULL DEFAULT 100",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS run_interval_seconds   INTEGER       NOT NULL DEFAULT 60",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS per_symbol_max_positions INTEGER     NOT NULL DEFAULT 1",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS allow_buy              BOOLEAN       NOT NULL DEFAULT TRUE",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS allow_sell             BOOLEAN       NOT NULL DEFAULT TRUE",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS cooldown_seconds       INTEGER       NOT NULL DEFAULT 0",
+
+    # ── bot_states: nullable columns that may be missing on older schemas ──────
+    "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS started_at    TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS last_cycle_at TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS last_error    TEXT",
 ]
 
 

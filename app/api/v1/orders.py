@@ -10,12 +10,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_active_user, get_db
+from app.core.logger import get_logger
 from app.models.order import Order
 from app.models.portfolio import Portfolio
 from app.models.user import User
 from app.schemas.order import OrderCreate, OrderListResponse, OrderOut
 from app.services import order_service
 
+log = get_logger(__name__)
 router = APIRouter()
 
 
@@ -119,6 +121,17 @@ async def create_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
+        )
+    except Exception as exc:
+        log.exception(
+            "create_order unexpected error",
+            symbol=body.symbol,
+            side=body.side,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Order creation failed: {type(exc).__name__}: {exc}",
         )
     return _order_to_out(order)
 
