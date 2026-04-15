@@ -140,6 +140,56 @@ async def get_quotes(
 
 
 @router.get(
+    "/status",
+    summary="Current market open/closed status",
+    tags=["market"],
+)
+async def get_market_status(
+    symbol: str | None = Query(
+        None,
+        description="Symbol to check — determines whether NYSE hours apply. "
+                    "Forex, commodities, and crypto are always open.",
+    ),
+    current_user: User = Depends(get_current_active_user),
+) -> dict:
+    """
+    Returns session status for the market that trades the given symbol.
+
+    • US equities / ETFs  → NYSE/NASDAQ hours (Mon–Fri 09:30–16:00 ET)
+    • Forex pairs         → always open  (market = "FX")
+    • Crypto              → always open  (market = "Crypto")
+    • Commodities         → always open  (market = "Commodities")
+    """
+    from app.services.market_hours import get_nyse_status
+
+    sym = (symbol or "").upper().strip()
+
+    # Forex: contains a "/"
+    if "/" in sym:
+        return {"is_open": True, "session": "regular",
+                "next_open": None, "next_close": None,
+                "market": "FX", "timezone": "UTC"}
+
+    # Crypto: ends with known stablecoin/coin suffix
+    _CRYPTO = {"USDT", "USDC", "BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "DOGE"}
+    if any(sym.endswith(s) and len(sym) > len(s) for s in _CRYPTO):
+        return {"is_open": True, "session": "regular",
+                "next_open": None, "next_close": None,
+                "market": "Crypto", "timezone": "UTC"}
+
+    # Commodities: known no-slash symbols
+    _COMM = {"WTI", "BRENT", "NATGAS", "OIL", "USOIL", "UKOIL",
+             "XAUUSD", "XAGUSD", "XPTUSD"}
+    if sym in _COMM:
+        return {"is_open": True, "session": "regular",
+                "next_open": None, "next_close": None,
+                "market": "Commodities", "timezone": "UTC"}
+
+    # Default: US equity → NYSE session
+    return get_nyse_status()
+
+
+@router.get(
     "/debug",
     summary="Multi-provider diagnostics",
     tags=["market"],
