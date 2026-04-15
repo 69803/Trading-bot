@@ -157,8 +157,16 @@ async def get_positions(
         stmt = stmt.where(Position.is_open == True)  # noqa: E712
     if bot_id:
         stmt = stmt.where(Position.bot_id == bot_id)
-    result = await db.execute(stmt.order_by(Position.opened_at.desc()).limit(limit))
-    return [_position_to_out(p) for p in result.scalars().all()]
+    try:
+        result = await db.execute(stmt.order_by(Position.opened_at.desc()).limit(limit))
+        return [_position_to_out(p) for p in result.scalars().all()]
+    except Exception as exc:
+        log.exception("get_positions SELECT failed", portfolio_id=str(portfolio.id), error=str(exc))
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return []
 
 
 @router.get(
