@@ -4,8 +4,9 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -124,6 +125,26 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ---------------------------------------------------------------------------
+    # Global exception handler — ensures CORS headers are present on 500s.
+    # Without this, Starlette's ServerErrorMiddleware can return the error
+    # response before CORSMiddleware adds Access-Control-Allow-Origin, causing
+    # the browser to block the response and the client to see "Network Error"
+    # instead of the actual status code.
+    # ---------------------------------------------------------------------------
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        log.exception(
+            "Unhandled exception",
+            path=request.url.path,
+            method=request.method,
+            error=str(exc),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
 
     # ---------------------------------------------------------------------------
     # Mount API router
