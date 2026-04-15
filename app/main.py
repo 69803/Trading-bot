@@ -127,12 +127,13 @@ def create_app() -> FastAPI:
     )
 
     # ---------------------------------------------------------------------------
-    # Global exception handler — ensures CORS headers are present on 500s.
-    # Without this, Starlette's ServerErrorMiddleware can return the error
-    # response before CORSMiddleware adds Access-Control-Allow-Origin, causing
-    # the browser to block the response and the client to see "Network Error"
-    # instead of the actual status code.
+    # Global exception handler — adds CORS headers directly on the 500 response.
+    # FastAPI's CORSMiddleware does NOT reliably process responses that come
+    # from exception handlers (they can bypass the middleware send() wrapper).
+    # Safest fix: include Access-Control-Allow-Origin in the response itself.
     # ---------------------------------------------------------------------------
+    _allowed_origins_set = set(allowed_origins)
+
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         log.exception(
@@ -141,9 +142,15 @@ def create_app() -> FastAPI:
             method=request.method,
             error=str(exc),
         )
+        origin = request.headers.get("origin", "")
+        cors_headers: dict = {}
+        if origin in _allowed_origins_set:
+            cors_headers["Access-Control-Allow-Origin"] = origin
+            cors_headers["Access-Control-Allow-Credentials"] = "true"
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error"},
+            headers=cors_headers,
         )
 
     # ---------------------------------------------------------------------------
