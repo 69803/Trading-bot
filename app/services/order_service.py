@@ -177,6 +177,9 @@ async def create_order(
                             await db.commit()
                         except Exception:
                             await db.rollback()
+                            # Rollback expires all ORM objects — reload so
+                            # _order_to_out() can access columns safely.
+                            await db.refresh(order)
                     return order
 
         try:
