@@ -164,6 +164,9 @@ _BOT_ID_DDL = [
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS avg_fill_price    NUMERIC(18,8)",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS rejection_reason  TEXT",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS filled_quantity   NUMERIC(18,8) NOT NULL DEFAULT 0",
+    # broker_order_id: Alpaca paper-trading UUID stored when a pending order is
+    # forwarded so the fill-sync job can poll status directly without scanning.
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS broker_order_id   VARCHAR(100)",
 ]
 
 

@@ -99,11 +99,15 @@ def _submit_sync(
     side: str,
     qty: float,
     notional: Optional[float],
+    client_order_id: Optional[str] = None,
 ) -> dict:
     """
     Synchronous HTTP POST to Alpaca paper API.
     Uses notional (dollar amount) when available — maps naturally to
     our investment_amount field.  Falls back to qty for legacy calls.
+
+    client_order_id: when set, Alpaca stores it on the order so the
+    fill-sync job can retrieve the order by our local UUID later.
 
     Returns the parsed JSON response dict.
     Raises on HTTP errors so the caller can catch and log.
@@ -124,6 +128,11 @@ def _submit_sync(
             "type":          "market",
             "time_in_force": "day",
         }
+
+    # Set client_order_id so we can look up this order from Alpaca later
+    # (used by the fill-sync polling job). Max length: 128 chars; UUID = 36.
+    if client_order_id:
+        payload["client_order_id"] = client_order_id
 
     url = f"{PAPER_BASE_URL}{ORDERS_PATH}"
     with httpx.Client(timeout=10.0) as client:
@@ -153,6 +162,7 @@ async def submit_order_to_alpaca(
     qty: float,
     notional: Optional[float] = None,
     internal_order_id: str = "",
+    client_order_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     Mirror a filled internal order to Alpaca Paper Trading.
@@ -203,7 +213,7 @@ async def submit_order_to_alpaca(
 
     try:
         data = await asyncio.to_thread(
-            _submit_sync, symbol, side, qty, notional
+            _submit_sync, symbol, side, qty, notional, client_order_id
         )
 
         broker_order_id = data.get("id", "unknown")

@@ -104,6 +104,21 @@ async def _job_portfolio_snapshots() -> None:
             await db.rollback()
 
 
+async def _job_sync_alpaca_fills() -> None:
+    """
+    Poll Alpaca for pending manual equity orders and apply fills.
+
+    Only active when ALPACA_BROKER_ENABLED=true; silently skips otherwise.
+    Runs every 2 minutes so orders placed before market open get synced
+    quickly after the NYSE opens at 9:30 AM ET.
+    """
+    from app.services.alpaca_sync import sync_pending_alpaca_orders
+    try:
+        await sync_pending_alpaca_orders()
+    except Exception as exc:
+        log.exception("Scheduler Alpaca fill-sync failed", error=str(exc))
+
+
 async def _job_purge_refresh_tokens() -> None:
     """Delete expired or revoked refresh tokens to keep the table clean."""
     from sqlalchemy import delete
@@ -154,6 +169,13 @@ def start_scheduler() -> None:
         _job_portfolio_snapshots,
         trigger=IntervalTrigger(minutes=5),
         id="portfolio_snapshots",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _job_sync_alpaca_fills,
+        trigger=IntervalTrigger(minutes=2),
+        id="sync_alpaca_fills",
         replace_existing=True,
         max_instances=1,
     )

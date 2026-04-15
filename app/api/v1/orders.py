@@ -47,6 +47,7 @@ def _order_to_out(order: Order) -> OrderOut:
         created_at=order.created_at,
         updated_at=order.updated_at,
         bot_id=order.bot_id,
+        broker_order_id=getattr(order, "broker_order_id", None),
         realized_pnl=None,  # avoids lazy-load of Order.trades
     )
 

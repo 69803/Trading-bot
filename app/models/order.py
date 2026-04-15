@@ -41,6 +41,9 @@ class Order(Base):
     )  # pending / filled / cancelled / rejected
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     bot_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    # Alpaca paper-trading order UUID — set when the order is forwarded to Alpaca.
+    # Used by the fill-sync job to poll Alpaca status without scanning all orders.
+    broker_order_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Relationships
     portfolio: Mapped["Portfolio"] = relationship("Portfolio", back_populates="orders")

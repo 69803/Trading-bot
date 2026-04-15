@@ -48,6 +48,7 @@ class OrderOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     bot_id: Optional[str] = None
+    broker_order_id: Optional[str] = None
     # Derived from related Trade records (populated when trades are eager-loaded)
     realized_pnl: Optional[Decimal] = None
 
