@@ -19,7 +19,9 @@ from app.models.trade import Trade
 async def get_risk_settings(db: AsyncSession, user_id: UUID) -> RiskSettings:
     """Load risk settings, creating defaults if not present."""
     result = await db.execute(
-        select(RiskSettings).where(RiskSettings.user_id == user_id)
+        select(RiskSettings)
+        .where(RiskSettings.user_id == user_id)
+        .order_by(RiskSettings.created_at.asc())
     )
     risk: RiskSettings | None = result.scalars().first()
     if risk is None:
