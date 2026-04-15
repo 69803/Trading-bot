@@ -117,7 +117,7 @@ async def init_db(session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 
 _BOT_ID_DDL = [
-    # ── Add columns ───────────────────────────────────────────────────────────
+    # ── Add bot_id columns ────────────────────────────────────────────────────
     "ALTER TABLE bot_states       ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
     "UPDATE bot_states SET bot_id = 'trendmaster' WHERE bot_id IS NULL",
     "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS bot_id VARCHAR(50)",
@@ -139,6 +139,31 @@ _BOT_ID_DDL = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_states_user_bot       ON bot_states       (user_id, bot_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_configs_user_bot ON strategy_configs (user_id, bot_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_settings_user_bot    ON risk_settings    (user_id, bot_id)",
+
+    # ── positions: columns added after the initial schema ─────────────────────
+    # These were added incrementally to the ORM model but never backfilled
+    # to the Render DB via a formal migration.  Without them every SELECT on
+    # the positions table fails with UndefinedColumn → 500 on all position
+    # endpoints.  All statements use IF NOT EXISTS so they are idempotent.
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS investment_amount   NUMERIC(18,8)",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss_price     NUMERIC(18,8)",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS take_profit_price   NUMERIC(18,8)",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS closed_at           TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS closed_price        NUMERIC(18,8)",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS realized_pnl        NUMERIC(18,8) NOT NULL DEFAULT 0",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS is_paper            BOOLEAN",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS event_context       VARCHAR(40)",
+    # TP/SL cross-detection state (added for trailing-stop / break-even logic)
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS prev_evaluated_price NUMERIC(18,8)",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS high_water_mark      NUMERIC(18,8)",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS trailing_stop_price  NUMERIC(18,8)",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS break_even_activated BOOLEAN NOT NULL DEFAULT FALSE",
+
+    # ── orders: columns added after the initial schema ────────────────────────
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS investment_amount NUMERIC(18,8)",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS avg_fill_price    NUMERIC(18,8)",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS rejection_reason  TEXT",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS filled_quantity   NUMERIC(18,8) NOT NULL DEFAULT 0",
 ]
 
 
