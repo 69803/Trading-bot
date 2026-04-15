@@ -146,23 +146,31 @@ async def get_portfolio_history(
 
 async def update_position_prices(db: AsyncSession, portfolio_id: UUID) -> None:
     """Update current_price for all open positions using market_data_service."""
-    result = await db.execute(
-        select(Position).where(
-            Position.portfolio_id == portfolio_id,
-            Position.is_open == True,  # noqa: E712
+    try:
+        result = await db.execute(
+            select(Position).where(
+                Position.portfolio_id == portfolio_id,
+                Position.is_open == True,  # noqa: E712
+            )
         )
-    )
-    positions: List[Position] = list(result.scalars().all())
-    for pos in positions:
+        positions: List[Position] = list(result.scalars().all())
+        for pos in positions:
+            try:
+                price = await market_data_service.get_current_price(pos.symbol)
+                pos.current_price = Decimal(str(price))
+            except Exception:
+                pass
         try:
-            price = await market_data_service.get_current_price(pos.symbol)
-            pos.current_price = Decimal(str(price))
+            await db.commit()
+        except Exception:
+            await db.rollback()
+    except Exception:
+        # SELECT failed (e.g. UndefinedColumn, connection drop).
+        # Degrade gracefully — caller continues with stale prices.
+        try:
+            await db.rollback()
         except Exception:
             pass
-    try:
-        await db.commit()
-    except Exception:
-        await db.rollback()
 
 
 async def take_portfolio_snapshot(db: AsyncSession, portfolio_id: UUID) -> None:

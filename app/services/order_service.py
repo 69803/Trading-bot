@@ -176,8 +176,14 @@ async def create_order(
                     )
                     # Persist broker order ID so sync job can do direct lookups
                     if broker_id and broker_id != "unknown":
-                        order.broker_order_id = broker_id
-                        await db.commit()
+                        try:
+                            order.broker_order_id = broker_id
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
+                            # broker_order_id persistence failed — order is still
+                            # saved as pending from the first commit; sync job
+                            # will find it via client_order_id fallback scan.
                     return order
 
         try:
