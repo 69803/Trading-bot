@@ -162,9 +162,6 @@ async def create_order(
                     )
                     await db.commit()
                     await db.refresh(order)
-                    # Forward to Alpaca — they will queue it as a day/MOO order.
-                    # client_order_id = our local UUID so the fill-sync job can
-                    # identify this order when polling Alpaca later.
                     from app.services.alpaca_broker import submit_order_to_alpaca
                     broker_id = await submit_order_to_alpaca(
                         symbol=symbol,
@@ -174,16 +171,12 @@ async def create_order(
                         internal_order_id=str(order.id),
                         client_order_id=str(order.id),
                     )
-                    # Persist broker order ID so sync job can do direct lookups
                     if broker_id and broker_id != "unknown":
                         try:
                             order.broker_order_id = broker_id
                             await db.commit()
                         except Exception:
                             await db.rollback()
-                            # broker_order_id persistence failed — order is still
-                            # saved as pending from the first commit; sync job
-                            # will find it via client_order_id fallback scan.
                     return order
 
         try:
