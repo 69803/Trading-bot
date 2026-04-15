@@ -134,6 +134,45 @@ async def create_order(
 
     # ── Fill market orders immediately ───────────────────────────────────────
     if order_type == "market":
+        # ── Market-hours gate (manual US-equity orders only) ─────────────────
+        # Bots have their own session filters (USE_TRADING_SESSIONS).
+        # For manual orders: if NYSE is closed, leave the order as pending —
+        # no position, no PnL, no cash debit — until the market actually opens.
+        # Alpaca still receives the order and will queue it as MOO.
+        if bot_id is None:
+            _s = symbol.upper()
+            _is_equity = (
+                "/" not in _s
+                and _s not in {"WTI", "BRENT", "NATGAS", "OIL", "USOIL", "UKOIL",
+                               "XAUUSD", "XAGUSD", "XPTUSD"}
+                and not any(
+                    _s.endswith(c) and len(_s) > len(c)
+                    for c in {"USDT", "USDC", "BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "DOGE"}
+                )
+            )
+            if _is_equity:
+                from app.services.market_hours import get_nyse_status
+                _hrs = get_nyse_status()
+                if not _hrs["is_open"]:
+                    log.info(
+                        "ORDER pending — NYSE closed, no local fill",
+                        symbol=symbol, side=side,
+                        session=_hrs["session"],
+                        next_open=_hrs["next_open"],
+                    )
+                    await db.commit()
+                    await db.refresh(order)
+                    # Forward to Alpaca — they will queue it as a day/MOO order
+                    from app.services.alpaca_broker import submit_order_to_alpaca
+                    await submit_order_to_alpaca(
+                        symbol=symbol,
+                        side=side,
+                        qty=float(est_qty),
+                        notional=float(investment_amount) if investment_amount else None,
+                        internal_order_id=str(order.id),
+                    )
+                    return order
+
         try:
             raw_price = Decimal(str(await market_data_router.get_current_price(symbol)))
         except Exception as exc:
