@@ -349,7 +349,7 @@ async def sync_pending_alpaca_orders() -> None:
                     else:
                         await db.commit()  # still commit the cancellation if that happened
 
-                elif alpaca_status in ("canceled", "expired", "rejected"):
+                elif alpaca_status in ("canceled", "expired", "rejected", "done_for_day"):
                     fresh_order.status = "cancelled"
                     fresh_order.rejection_reason = f"Broker: {alpaca_status}"
                     fresh_order.updated_at = datetime.now(timezone.utc)
