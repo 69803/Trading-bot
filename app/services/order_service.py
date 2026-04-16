@@ -61,6 +61,28 @@ async def create_order(
     if investment_amount is None and quantity is None:
         raise ValueError("Either investment_amount or quantity must be provided")
 
+    # ── Market-hours gate — FIRST, before any DB write or Alpaca call ────────
+    # Raise ValueError (→ 400 in the API layer) when NYSE is closed for manual
+    # US-equity market orders.  Bots are exempt (they manage their own session
+    # filters).  Nothing is written to the DB and Alpaca never receives the call.
+    if order_type == "market" and bot_id is None:
+        _s = symbol.upper()
+        _is_equity = (
+            "/" not in _s
+            and _s not in {"WTI", "BRENT", "NATGAS", "OIL", "USOIL", "UKOIL",
+                           "XAUUSD", "XAGUSD", "XPTUSD"}
+            and not any(
+                _s.endswith(c) and len(_s) > len(c)
+                for c in {"USDT", "USDC", "BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "DOGE"}
+            )
+        )
+        if _is_equity:
+            from app.services.market_hours import get_nyse_status
+            _hrs = get_nyse_status()
+            if not _hrs["is_open"]:
+                _next = _hrs.get("next_open") or "unknown"
+                raise ValueError(f"Market is closed. Next open: {_next}.")
+
     # ── Estimate qty for risk check ──────────────────────────────────────────
     try:
         est_price = Decimal(str(await market_data_router.get_current_price(symbol)))
@@ -134,54 +156,6 @@ async def create_order(
 
     # ── Fill market orders immediately ───────────────────────────────────────
     if order_type == "market":
-        # ── Market-hours gate (manual US-equity orders only) ─────────────────
-        # Bots have their own session filters (USE_TRADING_SESSIONS).
-        # For manual orders: if NYSE is closed, leave the order as pending —
-        # no position, no PnL, no cash debit — until the market actually opens.
-        # Alpaca still receives the order and will queue it as MOO.
-        if bot_id is None:
-            _s = symbol.upper()
-            _is_equity = (
-                "/" not in _s
-                and _s not in {"WTI", "BRENT", "NATGAS", "OIL", "USOIL", "UKOIL",
-                               "XAUUSD", "XAGUSD", "XPTUSD"}
-                and not any(
-                    _s.endswith(c) and len(_s) > len(c)
-                    for c in {"USDT", "USDC", "BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "DOGE"}
-                )
-            )
-            if _is_equity:
-                from app.services.market_hours import get_nyse_status
-                _hrs = get_nyse_status()
-                if not _hrs["is_open"]:
-                    log.info(
-                        "ORDER pending — NYSE closed, no local fill",
-                        symbol=symbol, side=side,
-                        session=_hrs["session"],
-                        next_open=_hrs["next_open"],
-                    )
-                    await db.commit()
-                    await db.refresh(order)
-                    from app.services.alpaca_broker import submit_order_to_alpaca
-                    broker_id = await submit_order_to_alpaca(
-                        symbol=symbol,
-                        side=side,
-                        qty=float(est_qty),
-                        notional=float(investment_amount) if investment_amount else None,
-                        internal_order_id=str(order.id),
-                        client_order_id=str(order.id),
-                    )
-                    if broker_id and broker_id != "unknown":
-                        try:
-                            order.broker_order_id = broker_id
-                            await db.commit()
-                        except Exception:
-                            await db.rollback()
-                            # Rollback expires all ORM objects — reload so
-                            # _order_to_out() can access columns safely.
-                            await db.refresh(order)
-                    return order
-
         try:
             raw_price = Decimal(str(await market_data_router.get_current_price(symbol)))
         except Exception as exc:
