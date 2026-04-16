@@ -262,14 +262,24 @@ async def create_order(
         # ── Alpaca Paper broker mirror (non-blocking) ─────────────────────────
         # Runs AFTER the internal commit so a failure here never rolls back the
         # trade.  Only fires for US equities when ALPACA_BROKER_ENABLED=true.
-        from app.services.alpaca_broker import submit_order_to_alpaca
-        await submit_order_to_alpaca(
-            symbol=symbol,
-            side=side,
-            qty=float(qty),
-            notional=float(invest_dec),
-            internal_order_id=str(order.id),
-        )
+        # Wrapped in try/except so a network or auth error from Alpaca never
+        # propagates as a 500 on POST /orders — the trade is already committed.
+        try:
+            from app.services.alpaca_broker import submit_order_to_alpaca
+            await submit_order_to_alpaca(
+                symbol=symbol,
+                side=side,
+                qty=float(qty),
+                notional=float(invest_dec),
+                internal_order_id=str(order.id),
+            )
+        except Exception as _alpaca_exc:
+            log.warning(
+                "Alpaca submit failed (non-blocking, order already committed)",
+                symbol=symbol,
+                order_id=str(order.id),
+                error=str(_alpaca_exc),
+            )
 
     return order
 

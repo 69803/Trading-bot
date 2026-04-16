@@ -151,6 +151,12 @@ async def get_positions(
 
     # Refresh current prices for open positions before returning
     await portfolio_service.update_position_prices(db, portfolio.id)
+    # update_position_prices may commit or rollback internally; reload portfolio
+    # scalars so they are fresh regardless (consistent with get_portfolio / get_balance)
+    try:
+        await db.refresh(portfolio)
+    except Exception:
+        pass
 
     stmt = select(Position).where(Position.portfolio_id == portfolio.id)
     if open_only:

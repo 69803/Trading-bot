@@ -71,8 +71,11 @@ async def _job_bot_cycle() -> None:
         try:
             await run_bot_cycle(db)
         except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             log.exception("Scheduler bot cycle failed", error=str(exc))
-            await db.rollback()
 
 
 async def _job_fill_limit_orders() -> None:
@@ -82,8 +85,11 @@ async def _job_fill_limit_orders() -> None:
         try:
             await fill_pending_limit_orders(db)
         except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             log.exception("Scheduler limit fill failed", error=str(exc))
-            await db.rollback()
 
 
 async def _job_portfolio_snapshots() -> None:
@@ -100,8 +106,11 @@ async def _job_portfolio_snapshots() -> None:
                 await take_portfolio_snapshot(db, portfolio.id)
             log.info("Portfolio snapshots taken", count=len(list(portfolios)))
         except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             log.exception("Scheduler snapshot failed", error=str(exc))
-            await db.rollback()
 
 
 async def _job_sync_alpaca_fills() -> None:
@@ -134,8 +143,11 @@ async def _job_purge_refresh_tokens() -> None:
             )
             await db.commit()
         except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             log.exception("Scheduler token purge failed", error=str(exc))
-            await db.rollback()
 
 
 # ---------------------------------------------------------------------------
