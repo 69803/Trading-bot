@@ -174,7 +174,7 @@ async def _apply_alpaca_fill(
         log.error("Alpaca sync: portfolio not found", order_id=str(order.id))
         return False
 
-    # ── Cash debit (buy side only) ───────────────────────────────────────────
+    # ── Cash debit / credit by side ─────────────────────────────────────────
     if order.side == "buy":
         if portfolio.cash_balance < invest_dec:
             log.warning(
@@ -189,6 +189,11 @@ async def _apply_alpaca_fill(
             order.updated_at = datetime.now(timezone.utc)
             return False
         portfolio.cash_balance -= invest_dec
+        portfolio.updated_at = datetime.now(timezone.utc)
+    elif order.side == "sell":
+        # Credit cash back from the fill proceeds
+        proceeds = (fill_price * filled_qty).quantize(Decimal("0.01"))
+        portfolio.cash_balance += proceeds
         portfolio.updated_at = datetime.now(timezone.utc)
 
     # ── Create Trade ─────────────────────────────────────────────────────────
@@ -214,11 +219,12 @@ async def _apply_alpaca_fill(
     order.filled_quantity   = filled_qty
     order.avg_fill_price    = fill_price
     order.status            = "filled"
+    order.alpaca_status     = alpaca_data.get("status", "filled")
     order.updated_at        = datetime.now(timezone.utc)
 
     await db.flush()
 
-    # ── Open Position ────────────────────────────────────────────────────────
+    # ── Open or close Position ───────────────────────────────────────────────
     rs_result = await db.execute(
         select(RiskSettings)
         .where(RiskSettings.user_id == portfolio.user_id)
@@ -228,34 +234,58 @@ async def _apply_alpaca_fill(
     sl_pct = float(risk.stop_loss_pct)   if risk else 0.03
     tp_pct = float(risk.take_profit_pct) if risk else 0.06
 
-    desired_side = "long" if order.side == "buy" else "short"
-    if desired_side == "long":
+    if order.side == "buy":
+        # Open a new long position
         stop_loss   = fill_price * Decimal(str(1 - sl_pct))
         take_profit = fill_price * Decimal(str(1 + tp_pct))
+        position = Position(
+            id=uuid4(),
+            portfolio_id=order.portfolio_id,
+            symbol=order.symbol,
+            side="long",
+            investment_amount=invest_dec,
+            quantity=filled_qty,
+            avg_entry_price=fill_price,
+            current_price=fill_price,
+            stop_loss_price=stop_loss.quantize(Decimal("0.00001")),
+            take_profit_price=take_profit.quantize(Decimal("0.00001")),
+            is_open=True,
+            opened_at=executed_at,
+            realized_pnl=Decimal("0"),
+            is_paper=False,
+            bot_id=None,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(position)
     else:
-        stop_loss   = fill_price * Decimal(str(1 + sl_pct))
-        take_profit = fill_price * Decimal(str(1 - tp_pct))
+        # Close the matching open long position (SELL fill)
+        pos_result = await db.execute(
+            select(Position).where(
+                Position.portfolio_id == order.portfolio_id,
+                Position.symbol == order.symbol,
+                Position.side == "long",
+                Position.is_open == True,  # noqa: E712
+            ).order_by(Position.opened_at.asc())
+        )
+        open_pos: Position | None = pos_result.scalars().first()
+        if open_pos is not None:
+            pnl = (fill_price - open_pos.avg_entry_price) * filled_qty
+            open_pos.realized_pnl  = pnl.quantize(Decimal("0.00001"))
+            open_pos.is_open       = False
+            open_pos.closed_at     = executed_at
+            open_pos.closed_price  = fill_price
+            open_pos.current_price = fill_price
+            open_pos.updated_at    = datetime.now(timezone.utc)
+            portfolio.realized_pnl = (portfolio.realized_pnl or Decimal("0")) + pnl
+            portfolio.updated_at   = datetime.now(timezone.utc)
+        else:
+            log.warning(
+                "Alpaca sync: SELL fill — no matching open long position found",
+                order_id=str(order.id),
+                symbol=order.symbol,
+            )
 
-    position = Position(
-        id=uuid4(),
-        portfolio_id=order.portfolio_id,
-        symbol=order.symbol,
-        side=desired_side,
-        investment_amount=invest_dec,
-        quantity=filled_qty,
-        avg_entry_price=fill_price,
-        current_price=fill_price,
-        stop_loss_price=stop_loss.quantize(Decimal("0.00001")),
-        take_profit_price=take_profit.quantize(Decimal("0.00001")),
-        is_open=True,
-        opened_at=executed_at,
-        realized_pnl=Decimal("0"),
-        is_paper=False,     # real broker fill, not simulation
-        bot_id=None,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
-    db.add(position)
     await db.flush()
 
     log.info(
@@ -336,18 +366,17 @@ async def sync_pending_alpaca_orders() -> None:
                     )
                     continue
 
-                # Store broker_order_id if we didn't have it yet
+                alpaca_status = alpaca_data.get("status", "")
+
+                # Always persist the latest Alpaca status so the UI reflects it
+                status_changed = fresh_order.alpaca_status != alpaca_status
+                fresh_order.alpaca_status = alpaca_status
                 if not fresh_order.broker_order_id and alpaca_data.get("id"):
                     fresh_order.broker_order_id = alpaca_data["id"]
 
-                alpaca_status = alpaca_data.get("status", "")
-
                 if alpaca_status == "filled":
                     success = await _apply_alpaca_fill(fresh_order, alpaca_data, db)
-                    if success:
-                        await db.commit()
-                    else:
-                        await db.commit()  # still commit the cancellation if that happened
+                    await db.commit()  # commit fill or cancellation
 
                 elif alpaca_status in ("canceled", "expired", "rejected", "done_for_day"):
                     fresh_order.status = "cancelled"
@@ -368,18 +397,17 @@ async def sync_pending_alpaca_orders() -> None:
                         symbol=fresh_order.symbol,
                         filled_qty=alpaca_data.get("filled_qty"),
                     )
-                    if fresh_order.broker_order_id:
-                        await db.commit()   # persist broker_order_id if just set
+                    await db.commit()  # persist alpaca_status + broker_order_id
 
                 else:
-                    log.info(
-                        "Alpaca sync: order still pending",
-                        order_id=str(fresh_order.id),
-                        symbol=fresh_order.symbol,
-                        alpaca_status=alpaca_status,
-                    )
-                    if fresh_order.broker_order_id:
-                        await db.commit()
+                    if status_changed or fresh_order.broker_order_id:
+                        log.info(
+                            "Alpaca sync: order still pending",
+                            order_id=str(fresh_order.id),
+                            symbol=fresh_order.symbol,
+                            alpaca_status=alpaca_status,
+                        )
+                        await db.commit()  # persist alpaca_status update
 
             except Exception as exc:
                 log.exception(

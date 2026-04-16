@@ -167,6 +167,10 @@ _BOT_ID_DDL = [
     # broker_order_id: Alpaca paper-trading UUID stored when a pending order is
     # forwarded so the fill-sync job can poll status directly without scanning.
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS broker_order_id   VARCHAR(100)",
+    # alpaca_status / submitted_at: track Alpaca order lifecycle for the
+    # Alpaca-first manual trading flow (ALPACA_BROKER_ENABLED=true).
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS alpaca_status     VARCHAR(30)",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS submitted_at      TIMESTAMP WITH TIME ZONE",
 
     # ── risk_settings: advanced risk-management columns (professional upgrade) ─
     # Added to the ORM model after the initial schema.  Without them every

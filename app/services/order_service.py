@@ -61,28 +61,6 @@ async def create_order(
     if investment_amount is None and quantity is None:
         raise ValueError("Either investment_amount or quantity must be provided")
 
-    # ── Market-hours gate — FIRST, before any DB write or Alpaca call ────────
-    # Raise ValueError (→ 400 in the API layer) when NYSE is closed for manual
-    # US-equity market orders.  Bots are exempt (they manage their own session
-    # filters).  Nothing is written to the DB and Alpaca never receives the call.
-    if order_type == "market" and bot_id is None:
-        _s = symbol.upper()
-        _is_equity = (
-            "/" not in _s
-            and _s not in {"WTI", "BRENT", "NATGAS", "OIL", "USOIL", "UKOIL",
-                           "XAUUSD", "XAGUSD", "XPTUSD"}
-            and not any(
-                _s.endswith(c) and len(_s) > len(c)
-                for c in {"USDT", "USDC", "BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "DOGE"}
-            )
-        )
-        if _is_equity:
-            from app.services.market_hours import get_nyse_status
-            _hrs = get_nyse_status()
-            if not _hrs["is_open"]:
-                _next = _hrs.get("next_open") or "unknown"
-                raise ValueError(f"Market is closed. Next open: {_next}.")
-
     # ── Estimate qty for risk check ──────────────────────────────────────────
     try:
         est_price = Decimal(str(await market_data_router.get_current_price(symbol)))
@@ -134,6 +112,67 @@ async def create_order(
     portfolio: Portfolio = port_result.scalars().first()
     if portfolio is None:
         raise ValueError(f"Portfolio {portfolio_id} not found")
+
+    # ── Alpaca-first path: manual equity orders when ALPACA_BROKER_ENABLED ───
+    # When enabled, manual US-equity market orders are sent directly to Alpaca
+    # as the source of truth.  No local fill, no immediate cash debit, no Trade
+    # or Position record.  The fill-sync scheduler applies all of that when
+    # Alpaca reports "filled" (typically at next market open).
+    from app.core.config import settings as _settings
+    from app.services.alpaca_broker import _is_us_equity, submit_order_to_alpaca
+
+    if (
+        _settings.ALPACA_BROKER_ENABLED
+        and bot_id is None
+        and order_type == "market"
+        and _is_us_equity(symbol)
+    ):
+        now = datetime.now(timezone.utc)
+        order = Order(
+            id=uuid4(),
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            investment_amount=Decimal(str(investment_amount)) if investment_amount else None,
+            quantity=est_qty,
+            filled_quantity=Decimal("0"),
+            limit_price=Decimal(str(limit_price)) if limit_price else None,
+            status="pending",
+            bot_id=None,
+            submitted_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(order)
+        await db.flush()
+
+        # Submit to Alpaca — returns full response dict or None on failure
+        alpaca_result = await submit_order_to_alpaca(
+            symbol=symbol,
+            side=side,
+            qty=float(est_qty),
+            notional=float(investment_amount) if investment_amount else None,
+            internal_order_id=str(order.id),
+            client_order_id=str(order.id),
+        )
+
+        if alpaca_result:
+            order.broker_order_id = alpaca_result.get("id")
+            order.alpaca_status   = alpaca_result.get("status")
+
+        await db.commit()
+        await db.refresh(order)
+
+        log.info(
+            "ORDER SERVICE: queued in Alpaca (no local fill yet)",
+            order_id=str(order.id),
+            symbol=symbol,
+            side=side,
+            broker_order_id=order.broker_order_id,
+            alpaca_status=order.alpaca_status,
+        )
+        return order
 
     # ── Create pending order ─────────────────────────────────────────────────
     order = Order(
@@ -233,13 +272,12 @@ async def create_order(
         await db.commit()
         await db.refresh(order)
 
-        # ── Alpaca Paper broker mirror (non-blocking) ─────────────────────────
-        # Runs AFTER the internal commit so a failure here never rolls back the
-        # trade.  Only fires for US equities when ALPACA_BROKER_ENABLED=true.
-        # Wrapped in try/except so a network or auth error from Alpaca never
-        # propagates as a 500 on POST /orders — the trade is already committed.
+        # ── Alpaca Paper broker mirror (non-blocking, simulation path only) ─────
+        # Only reaches here when ALPACA_BROKER_ENABLED=False (or non-equity/bot).
+        # When ALPACA_BROKER_ENABLED=True for manual equity orders, the Alpaca-first
+        # path above handles submission before any local fill.
+        # Wrapped in try/except so a network or auth error never propagates as 500.
         try:
-            from app.services.alpaca_broker import submit_order_to_alpaca
             await submit_order_to_alpaca(
                 symbol=symbol,
                 side=side,

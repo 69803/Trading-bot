@@ -163,11 +163,11 @@ async def submit_order_to_alpaca(
     notional: Optional[float] = None,
     internal_order_id: str = "",
     client_order_id: Optional[str] = None,
-) -> Optional[str]:
+) -> Optional[dict]:
     """
-    Mirror a filled internal order to Alpaca Paper Trading.
+    Submit an order to Alpaca Paper Trading.
 
-    Returns the Alpaca broker_order_id on success, None on any error.
+    Returns the full Alpaca order response dict on success, None on any error.
     NEVER raises — all exceptions are caught and logged as warnings so the
     internal order flow is never interrupted.
 
@@ -231,7 +231,7 @@ async def submit_order_to_alpaca(
             submitted_at=submitted_at,
             status=alpaca_status,
         )
-        return broker_order_id
+        return data
 
     except Exception as exc:
         log.warning(

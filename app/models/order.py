@@ -1,8 +1,9 @@
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import ForeignKey, Numeric, String, Text, Index
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +45,10 @@ class Order(Base):
     # Alpaca paper-trading order UUID — set when the order is forwarded to Alpaca.
     # Used by the fill-sync job to poll Alpaca status without scanning all orders.
     broker_order_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    alpaca_status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Relationships
     portfolio: Mapped["Portfolio"] = relationship("Portfolio", back_populates="orders")

@@ -50,6 +50,8 @@ def _order_to_out(order: Order) -> OrderOut:
         updated_at=order.updated_at,
         bot_id=order.bot_id,
         broker_order_id=getattr(order, "broker_order_id", None),
+        alpaca_status=getattr(order, "alpaca_status", None),
+        submitted_at=getattr(order, "submitted_at", None),
         realized_pnl=None,  # avoids lazy-load of Order.trades
     )
 

@@ -49,6 +49,8 @@ class OrderOut(BaseModel):
     updated_at: datetime
     bot_id: Optional[str] = None
     broker_order_id: Optional[str] = None
+    alpaca_status: Optional[str] = None
+    submitted_at: Optional[datetime] = None
     # Derived from related Trade records (populated when trades are eager-loaded)
     realized_pnl: Optional[Decimal] = None
 
