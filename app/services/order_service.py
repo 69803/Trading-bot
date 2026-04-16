@@ -147,7 +147,10 @@ async def create_order(
         db.add(order)
         await db.flush()
 
-        # Submit to Alpaca — returns full response dict or None on failure
+        # Submit to Alpaca — returns full response dict or None on any failure.
+        # An order is only allowed to stay "pending" when Alpaca confirmed it
+        # (broker_order_id present).  Any other outcome → reject immediately so
+        # the user sees the failure and no orphaned pending order is left behind.
         alpaca_result = await submit_order_to_alpaca(
             symbol=symbol,
             side=side,
@@ -157,21 +160,37 @@ async def create_order(
             client_order_id=str(order.id),
         )
 
-        if alpaca_result:
-            order.broker_order_id = alpaca_result.get("id")
-            order.alpaca_status   = alpaca_result.get("status")
+        broker_confirmed = bool(alpaca_result and alpaca_result.get("id"))
+
+        if broker_confirmed:
+            order.broker_order_id = alpaca_result.get("id")       # type: ignore[union-attr]
+            order.alpaca_status   = alpaca_result.get("status")   # type: ignore[union-attr]
+            # status stays "pending" — fill-sync will promote to "filled"
+            log.info(
+                "ORDER SERVICE: queued in Alpaca (no local fill yet)",
+                order_id=str(order.id),
+                symbol=symbol,
+                side=side,
+                broker_order_id=order.broker_order_id,
+                alpaca_status=order.alpaca_status,
+            )
+        else:
+            # Alpaca was unreachable, returned an error, or gave no order ID.
+            # Reject the order now — do NOT leave it as "pending".
+            order.status           = "rejected"
+            order.rejection_reason = "Alpaca submission failed — broker unreachable or rejected the order"
+            order.alpaca_status    = None
+            order.updated_at       = datetime.now(timezone.utc)
+            log.warning(
+                "ORDER SERVICE: Alpaca submission failed — order rejected",
+                order_id=str(order.id),
+                symbol=symbol,
+                side=side,
+                alpaca_result=str(alpaca_result),
+            )
 
         await db.commit()
         await db.refresh(order)
-
-        log.info(
-            "ORDER SERVICE: queued in Alpaca (no local fill yet)",
-            order_id=str(order.id),
-            symbol=symbol,
-            side=side,
-            broker_order_id=order.broker_order_id,
-            alpaca_status=order.alpaca_status,
-        )
         return order
 
     # ── Create pending order ─────────────────────────────────────────────────

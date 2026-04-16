@@ -141,7 +141,33 @@ async def _apply_alpaca_fill(
 
     This mirrors the filled-path in order_service.create_order() but uses
     real broker fill data (avg_fill_price, filled_qty, filled_at).
+
+    Idempotency guarantee
+    ─────────────────────
+    Before creating any Trade or touching cash we check whether a Trade
+    already exists for this order.  This covers the edge case where a prior
+    sync run applied the fill successfully but the DB commit failed, leaving
+    the order in "pending" state while a Trade record already exists.
+    Without this guard a second run would create a duplicate Trade + Position
+    and double-debit / double-credit the cash balance.
     """
+    # ── Duplicate-fill guard ─────────────────────────────────────────────────
+    existing_trade = await db.execute(
+        select(Trade).where(Trade.order_id == order.id)
+    )
+    if existing_trade.scalars().first() is not None:
+        log.warning(
+            "Alpaca sync: trade already exists for this order — "
+            "skipping fill to prevent duplicate (setting status=filled)",
+            order_id=str(order.id),
+            symbol=order.symbol,
+        )
+        # Ensure the order status is consistent even though we won't re-apply
+        if order.status != "filled":
+            order.status     = "filled"
+            order.updated_at = datetime.now(timezone.utc)
+        return True
+
     # ── Parse fill data from Alpaca ──────────────────────────────────────────
     raw_filled_qty  = alpaca_data.get("filled_qty")  or alpaca_data.get("qty")
     raw_fill_price  = alpaca_data.get("filled_avg_price") or alpaca_data.get("limit_price")
@@ -358,12 +384,39 @@ async def sync_pending_alpaca_orders() -> None:
                     )
 
                 if alpaca_data is None:
-                    log.info(
-                        "Alpaca sync: order not found on broker",
-                        order_id=str(fresh_order.id),
-                        symbol=fresh_order.symbol,
-                        note="may not have been submitted yet",
-                    )
+                    # Order not (yet) visible on Alpaca.  If it was submitted
+                    # recently, give it time — Alpaca can take a few minutes to
+                    # show a queued order.  But if it has been pending for more
+                    # than 30 minutes with no broker_order_id we assume the
+                    # original submission was silently lost and expire the order
+                    # so it doesn't poll forever.
+                    age_secs: float = 0.0
+                    if fresh_order.submitted_at is not None:
+                        age_secs = (
+                            datetime.now(timezone.utc) - fresh_order.submitted_at
+                        ).total_seconds()
+
+                    if not fresh_order.broker_order_id and age_secs > 1800:
+                        fresh_order.status           = "cancelled"
+                        fresh_order.rejection_reason = (
+                            "Alpaca submission unconfirmed after 30 minutes — order expired"
+                        )
+                        fresh_order.updated_at = datetime.now(timezone.utc)
+                        await db.commit()
+                        log.warning(
+                            "Alpaca sync: expiring unconfirmed pending order",
+                            order_id=str(fresh_order.id),
+                            symbol=fresh_order.symbol,
+                            age_minutes=round(age_secs / 60, 1),
+                        )
+                    else:
+                        log.info(
+                            "Alpaca sync: order not yet visible on broker — will retry",
+                            order_id=str(fresh_order.id),
+                            symbol=fresh_order.symbol,
+                            age_minutes=round(age_secs / 60, 1),
+                            has_broker_id=bool(fresh_order.broker_order_id),
+                        )
                     continue
 
                 alpaca_status = alpaca_data.get("status", "")
