@@ -54,6 +54,8 @@ async def get_candles(
         raw_candles = await market_data_router.get_candles(sym, timeframe, limit=limit)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Market data unavailable for {sym}: {exc}")
 
     candle_list = [
         CandleOut(
@@ -121,7 +123,7 @@ async def get_quote(
                     timestamp=datetime.fromisoformat(q["timestamp"]),
                 )
             )
-        except (ValueError, KeyError):
+        except Exception:
             continue
 
     return QuoteListResponse(quotes=quotes)
