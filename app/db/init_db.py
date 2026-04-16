@@ -187,9 +187,11 @@ _BOT_ID_DDL = [
     "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS allow_sell             BOOLEAN       NOT NULL DEFAULT TRUE",
     "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS cooldown_seconds       INTEGER       NOT NULL DEFAULT 0",
 
-    # ── bot_states: nullable columns that may be missing on older schemas ──────
+    # ── bot_states: columns that may be missing on older schemas ─────────────
     "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS started_at    TIMESTAMP WITH TIME ZONE",
     "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS last_cycle_at TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS cycles_run    INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS last_log      TEXT",
     "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS last_error    TEXT",
 ]
 
