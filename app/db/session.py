@@ -30,6 +30,7 @@ if _DB_URL:
         pool_size=10,
         max_overflow=20,
         pool_pre_ping=True,
+        connect_args={"prepare_threshold": None},  # disable psycopg3 prepared stmts — incompatible with Render/PgBouncer transaction-mode pooler
     )
     AsyncSessionFactory: Optional[async_sessionmaker[_AsyncSession]] = async_sessionmaker(
         bind=engine,

@@ -83,7 +83,7 @@ async def list_orders(
         offset=(page - 1) * page_size,
         bot_id=bot_id,
     )
-    return OrderListResponse(items=orders, total=total)
+    return OrderListResponse(items=[_order_to_out(o) for o in orders], total=total)
 
 
 @router.post(
