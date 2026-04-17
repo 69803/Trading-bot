@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # Set to True in Render once ALPACA_API_KEY and ALPACA_SECRET_KEY are set.
     ALPACA_BROKER_ENABLED: bool = False
 
+    # ── Real-money (live) Alpaca credentials ────────────────────────────────
+    # Separate from the paper-trading keys above.
+    # Used exclusively when account_mode='live'.
+    # base URL for live: https://api.alpaca.markets  (NOT paper-api)
+    ALPACA_LIVE_API_KEY: str = ""
+    ALPACA_LIVE_SECRET_KEY: str = ""
+
     # Forex + Commodities provider (Twelve Data)
     TWELVE_DATA_API_KEY: str = ""
 

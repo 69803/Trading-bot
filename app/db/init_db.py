@@ -23,15 +23,19 @@ _ADMIN_PASSWORD = settings.ADMIN_PASSWORD
 
 async def _bootstrap_user(session: AsyncSession, user: User) -> None:
     """Create default StrategyConfig, RiskSettings, Portfolio, and BotState
-    for a newly created user. Safe to call in a flush-before-commit context."""
+    for a newly created user (paper mode). Safe to call in a flush-before-commit context."""
 
-    # Strategy config
+    # Strategy config — paper mode
     sc_result = await session.execute(
-        select(StrategyConfig).where(StrategyConfig.user_id == user.id)
+        select(StrategyConfig).where(
+            StrategyConfig.user_id == user.id,
+            StrategyConfig.account_mode == "paper",
+        )
     )
     if sc_result.scalars().first() is None:
         session.add(StrategyConfig(
             user_id=user.id,
+            account_mode="paper",
             ema_fast=50,
             ema_slow=200,
             rsi_period=14,
@@ -41,13 +45,17 @@ async def _bootstrap_user(session: AsyncSession, user: User) -> None:
             symbols=["EURUSD", "BTCUSD"],
         ))
 
-    # Risk settings
+    # Risk settings — paper mode
     rs_result = await session.execute(
-        select(RiskSettings).where(RiskSettings.user_id == user.id)
+        select(RiskSettings).where(
+            RiskSettings.user_id == user.id,
+            RiskSettings.account_mode == "paper",
+        )
     )
     if rs_result.scalars().first() is None:
         session.add(RiskSettings(
             user_id=user.id,
+            account_mode="paper",
             max_position_size_pct=Decimal("0.05"),
             max_daily_loss_pct=Decimal("0.02"),
             max_open_positions=10,
@@ -56,24 +64,47 @@ async def _bootstrap_user(session: AsyncSession, user: User) -> None:
             max_drawdown_pct=Decimal("0.20"),
         ))
 
-    # Portfolio
+    # Portfolio — paper mode
     port_result = await session.execute(
-        select(Portfolio).where(Portfolio.user_id == user.id)
+        select(Portfolio).where(
+            Portfolio.user_id == user.id,
+            Portfolio.account_mode == "paper",
+        )
     )
     if port_result.scalars().first() is None:
         session.add(Portfolio(
             user_id=user.id,
+            account_mode="paper",
             initial_capital=Decimal(str(settings.INITIAL_BALANCE)),
             cash_balance=Decimal(str(settings.INITIAL_BALANCE)),
             realized_pnl=Decimal("0.0"),
         ))
 
-    # Bot state
+    # Portfolio — live mode (starts empty: $0 until user funds it)
+    live_port_result = await session.execute(
+        select(Portfolio).where(
+            Portfolio.user_id == user.id,
+            Portfolio.account_mode == "live",
+        )
+    )
+    if live_port_result.scalars().first() is None:
+        session.add(Portfolio(
+            user_id=user.id,
+            account_mode="live",
+            initial_capital=Decimal("0.0"),
+            cash_balance=Decimal("0.0"),
+            realized_pnl=Decimal("0.0"),
+        ))
+
+    # Bot state — paper mode
     bot_result = await session.execute(
-        select(BotState).where(BotState.user_id == user.id)
+        select(BotState).where(
+            BotState.user_id == user.id,
+            BotState.account_mode == "paper",
+        )
     )
     if bot_result.scalars().first() is None:
-        session.add(BotState(user_id=user.id, is_running=False))
+        session.add(BotState(user_id=user.id, account_mode="paper", is_running=False))
 
     await session.flush()
 
@@ -99,10 +130,13 @@ async def init_db(session: AsyncSession) -> None:
     await _bootstrap_user(session, admin)
     await session.flush()
 
-    # One-time patch: remove BTCUSD from active strategy config for admin user.
+    # One-time patch: remove BTCUSD from active strategy config for admin user (paper mode).
     # Idempotent — only fires while BTCUSD is still present in symbols.
     sc_patch = await session.execute(
-        select(StrategyConfig).where(StrategyConfig.user_id == admin.id)
+        select(StrategyConfig).where(
+            StrategyConfig.user_id == admin.id,
+            StrategyConfig.account_mode == "paper",
+        )
     )
     sc = sc_patch.scalars().first()
     if sc is not None and "BTCUSD" in (sc.symbols or []):
@@ -197,6 +231,31 @@ _BOT_ID_DDL = [
     "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS cycles_run    INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS last_log      TEXT",
     "ALTER TABLE bot_states ADD COLUMN IF NOT EXISTS last_error    TEXT",
+
+    # ── account_mode: paper/live separation ──────────────────────────────────
+    # Adds account_mode to the 4 user-level tables so that paper and live data
+    # are fully isolated.  All existing rows are back-filled to 'paper'.
+    "ALTER TABLE portfolios       ADD COLUMN IF NOT EXISTS account_mode VARCHAR(10) NOT NULL DEFAULT 'paper'",
+    "ALTER TABLE strategy_configs ADD COLUMN IF NOT EXISTS account_mode VARCHAR(10) NOT NULL DEFAULT 'paper'",
+    "ALTER TABLE risk_settings    ADD COLUMN IF NOT EXISTS account_mode VARCHAR(10) NOT NULL DEFAULT 'paper'",
+    "ALTER TABLE bot_states       ADD COLUMN IF NOT EXISTS account_mode VARCHAR(10) NOT NULL DEFAULT 'paper'",
+    # Back-fill any NULL values (shouldn't exist due to DEFAULT, but just in case)
+    "UPDATE portfolios       SET account_mode = 'paper' WHERE account_mode IS NULL",
+    "UPDATE strategy_configs SET account_mode = 'paper' WHERE account_mode IS NULL",
+    "UPDATE risk_settings    SET account_mode = 'paper' WHERE account_mode IS NULL",
+    "UPDATE bot_states       SET account_mode = 'paper' WHERE account_mode IS NULL",
+    # Drop old 2-column unique indexes (user_id, bot_id) → replace with 3-column
+    "DROP INDEX IF EXISTS uq_bot_states_user_bot",
+    "DROP INDEX IF EXISTS uq_strategy_configs_user_bot",
+    "DROP INDEX IF EXISTS uq_risk_settings_user_bot",
+    # Create 3-column composite unique indexes
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_states_user_bot_mode       ON bot_states       (user_id, bot_id, account_mode)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_configs_user_bot_mode ON strategy_configs (user_id, bot_id, account_mode)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_settings_user_bot_mode    ON risk_settings    (user_id, bot_id, account_mode)",
+    # portfolios: drop old single-user_id unique constraint if it exists
+    "ALTER TABLE portfolios DROP CONSTRAINT IF EXISTS portfolios_user_id_key",
+    "DROP INDEX IF EXISTS uq_portfolios_user",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_portfolios_user_mode ON portfolios (user_id, account_mode)",
 ]
 
 

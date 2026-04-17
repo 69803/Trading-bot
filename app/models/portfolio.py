@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING, List
 
-from sqlalchemy import ForeignKey, Numeric
+from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,13 +17,21 @@ if TYPE_CHECKING:
 
 class Portfolio(Base):
     __tablename__ = "portfolios"
+    __table_args__ = (
+        # Each user has at most one portfolio per account mode (paper / live).
+        # Replaces the old single-column unique=True on user_id.
+        UniqueConstraint("user_id", "account_mode", name="uq_portfolios_user_mode"),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        unique=True,
         nullable=False,
         index=True,
+    )
+    # 'paper' (default) or 'live'.  Never mix data between modes.
+    account_mode: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="paper", index=True
     )
     initial_capital: Mapped[Decimal] = mapped_column(
         Numeric(18, 8), default=Decimal("10000.0"), nullable=False

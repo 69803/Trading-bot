@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_active_user, get_db
+from app.api.deps import get_account_mode, get_current_active_user, get_db
 from app.core.logger import get_logger
 from app.models.order import Order
 from app.models.portfolio import Portfolio
@@ -56,13 +56,15 @@ def _order_to_out(order: Order) -> OrderOut:
     )
 
 
-async def _get_portfolio_or_404(user: User, db: AsyncSession) -> Portfolio:
-    result = await db.execute(select(Portfolio).where(Portfolio.user_id == user.id))
+async def _get_portfolio_or_404(user: User, db: AsyncSession, account_mode: str = "paper") -> Portfolio:
+    result = await db.execute(
+        select(Portfolio).where(Portfolio.user_id == user.id, Portfolio.account_mode == account_mode)
+    )
     portfolio = result.scalars().first()
     if portfolio is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Portfolio not found",
+            detail=f"Portfolio not found for mode '{account_mode}'",
         )
     return portfolio
 
@@ -75,8 +77,9 @@ async def list_orders(
     bot_id: str | None = Query(None, description="Filter by bot (omit for all bots)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> OrderListResponse:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     orders, total = await order_service.get_orders(
         db,
         portfolio_id=portfolio.id,
@@ -98,8 +101,9 @@ async def create_order(
     body: OrderCreate,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> Order:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     if body.order_type == "limit" and body.limit_price is None:
         raise HTTPException(
@@ -118,6 +122,7 @@ async def create_order(
             quantity=float(body.quantity) if body.quantity is not None else None,
             investment_amount=float(body.investment_amount) if body.investment_amount is not None else None,
             limit_price=float(body.limit_price) if body.limit_price else None,
+            account_mode=account_mode,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -143,8 +148,9 @@ async def get_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> Order:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     result = await db.execute(
         select(Order).where(
@@ -166,8 +172,9 @@ async def get_order(
 async def delete_all_orders(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     result = await db.execute(
         select(Order).where(Order.portfolio_id == portfolio.id)
     )

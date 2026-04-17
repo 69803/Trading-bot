@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class StrategyConfig(Base):
     __tablename__ = "strategy_configs"
     __table_args__ = (
-        UniqueConstraint("user_id", "bot_id", name="uq_strategy_configs_user_bot"),
+        UniqueConstraint("user_id", "bot_id", "account_mode", name="uq_strategy_configs_user_bot_mode"),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -25,6 +25,7 @@ class StrategyConfig(Base):
         index=True,
     )
     bot_id: Mapped[str] = mapped_column(String(50), nullable=False, default="trendmaster")
+    account_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper", index=True)
     ema_fast: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     ema_slow: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     rsi_period: Mapped[int] = mapped_column(Integer, default=14, nullable=False)

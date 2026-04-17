@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class BotState(Base):
     __tablename__ = "bot_states"
     __table_args__ = (
-        UniqueConstraint("user_id", "bot_id", name="uq_bot_states_user_bot"),
+        UniqueConstraint("user_id", "bot_id", "account_mode", name="uq_bot_states_user_bot_mode"),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -28,6 +28,7 @@ class BotState(Base):
         index=True,
     )
     bot_id: Mapped[str] = mapped_column(String(50), nullable=False, default="trendmaster")
+    account_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper", index=True)
     is_running: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_active_user, get_db
+from app.api.deps import get_account_mode, get_current_active_user, get_db
 from app.models.bot_state import BotState
 from app.models.portfolio import Portfolio
 from app.models.position import Position
@@ -40,43 +40,49 @@ _DEFAULT_STRATEGY = dict(
 )
 
 
-async def _get_or_create_bot_state(user: User, db: AsyncSession, bot_id: str) -> BotState:
+async def _get_or_create_bot_state(user: User, db: AsyncSession, bot_id: str, account_mode: str = "paper") -> BotState:
     result = await db.execute(
-        select(BotState).where(BotState.user_id == user.id, BotState.bot_id == bot_id)
+        select(BotState).where(
+            BotState.user_id == user.id,
+            BotState.bot_id == bot_id,
+            BotState.account_mode == account_mode,
+        )
     )
     state: BotState | None = result.scalars().first()
     if state is None:
-        state = BotState(user_id=user.id, bot_id=bot_id, is_running=False)
+        state = BotState(user_id=user.id, bot_id=bot_id, account_mode=account_mode, is_running=False)
         db.add(state)
         await db.flush()
     return state
 
 
-async def _get_or_create_strategy(user: User, db: AsyncSession, bot_id: str) -> StrategyConfig:
+async def _get_or_create_strategy(user: User, db: AsyncSession, bot_id: str, account_mode: str = "paper") -> StrategyConfig:
     result = await db.execute(
         select(StrategyConfig).where(
             StrategyConfig.user_id == user.id,
             StrategyConfig.bot_id  == bot_id,
+            StrategyConfig.account_mode == account_mode,
         )
     )
     config: StrategyConfig | None = result.scalars().first()
     if config is None:
-        config = StrategyConfig(user_id=user.id, bot_id=bot_id, **_DEFAULT_STRATEGY)
+        config = StrategyConfig(user_id=user.id, bot_id=bot_id, account_mode=account_mode, **_DEFAULT_STRATEGY)
         db.add(config)
         await db.flush()
     return config
 
 
-async def _get_or_create_risk(user: User, db: AsyncSession, bot_id: str) -> RiskSettings:
+async def _get_or_create_risk(user: User, db: AsyncSession, bot_id: str, account_mode: str = "paper") -> RiskSettings:
     result = await db.execute(
         select(RiskSettings).where(
             RiskSettings.user_id == user.id,
             RiskSettings.bot_id  == bot_id,
+            RiskSettings.account_mode == account_mode,
         )
     )
     risk: RiskSettings | None = result.scalars().first()
     if risk is None:
-        risk = RiskSettings(user_id=user.id, bot_id=bot_id)
+        risk = RiskSettings(user_id=user.id, bot_id=bot_id, account_mode=account_mode)
         db.add(risk)
         await db.flush()
     return risk
@@ -112,24 +118,27 @@ async def get_bot_status(
     bot_id: str = Query(..., description="Bot identifier (e.g. trendmaster)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
     print(f"[STATUS] enter user={current_user.id} bot_id={bot_id}", flush=True)
     try:
-        return await _get_bot_status_inner(current_user, db, bot_id)
+        return await _get_bot_status_inner(current_user, db, bot_id, account_mode)
     except Exception as exc:
         tb = _traceback.format_exc()
         print(f"[STATUS] EXCEPTION: {exc}\n{tb}", flush=True)
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
 
-async def _get_bot_status_inner(current_user: User, db: AsyncSession, bot_id: str) -> dict:
-    state = await _get_or_create_bot_state(current_user, db, bot_id)
+async def _get_bot_status_inner(current_user: User, db: AsyncSession, bot_id: str, account_mode: str = "paper") -> dict:
+    state = await _get_or_create_bot_state(current_user, db, bot_id, account_mode)
     print(f"[STATUS] got state: bot_id={bot_id} is_running={state.is_running} cycles={state.cycles_run}", flush=True)
-    config = await _get_or_create_strategy(current_user, db, bot_id)
+    config = await _get_or_create_strategy(current_user, db, bot_id, account_mode)
     print(f"[STATUS] got config: symbols={config.symbols}", flush=True)
 
     # Open positions count for this bot
-    port_r = await db.execute(select(Portfolio).where(Portfolio.user_id == current_user.id))
+    port_r = await db.execute(
+        select(Portfolio).where(Portfolio.user_id == current_user.id, Portfolio.account_mode == account_mode)
+    )
     portfolio = port_r.scalars().first()
     open_count = 0
     if portfolio:
@@ -189,9 +198,10 @@ async def get_bot_config(
     bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> BotConfigOut:
-    config = await _get_or_create_strategy(current_user, db, bot_id)
-    risk = await _get_or_create_risk(current_user, db, bot_id)
+    config = await _get_or_create_strategy(current_user, db, bot_id, account_mode)
+    risk = await _get_or_create_risk(current_user, db, bot_id, account_mode)
     await db.commit()
     return _build_config_out(config, risk)
 
@@ -204,9 +214,10 @@ async def update_bot_config(
     bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> BotConfigOut:
-    config = await _get_or_create_strategy(current_user, db, bot_id)
-    risk = await _get_or_create_risk(current_user, db, bot_id)
+    config = await _get_or_create_strategy(current_user, db, bot_id, account_mode)
+    risk = await _get_or_create_risk(current_user, db, bot_id, account_mode)
 
     strategy_fields = [
         "ema_fast", "ema_slow", "rsi_period", "rsi_overbought", "rsi_oversold",
@@ -269,12 +280,13 @@ async def start_bot(
     bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
-    state = await _get_or_create_bot_state(current_user, db, bot_id)
+    state = await _get_or_create_bot_state(current_user, db, bot_id, account_mode)
     if state.is_running:
         return {"message": "Bot is already running", "is_running": True}
 
-    config = await _get_or_create_strategy(current_user, db, bot_id)
+    config = await _get_or_create_strategy(current_user, db, bot_id, account_mode)
     symbols = list(config.symbols or [])
     print(f"[StartBot] user={current_user.id} bot_id={bot_id} symbols={symbols}")
 
@@ -331,10 +343,11 @@ async def clear_bot_logs(
 async def activate_trendmaster(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
     _bot_id = "trendmaster"
-    config = await _get_or_create_strategy(current_user, db, _bot_id)
-    risk   = await _get_or_create_risk(current_user, db, _bot_id)
+    config = await _get_or_create_strategy(current_user, db, _bot_id, account_mode)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id, account_mode)
 
     config.ema_fast              = 9
     config.ema_slow              = 21
@@ -356,7 +369,7 @@ async def activate_trendmaster(
     risk.max_daily_loss_pct      = Decimal("0.03")
     risk.max_position_size_pct   = Decimal("0.10")
 
-    state = await _get_or_create_bot_state(current_user, db, _bot_id)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id, account_mode)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "TrendMaster activated — monitoring EUR/USD, GBP/USD, USD/CHF, AUD/USD"
@@ -379,10 +392,11 @@ async def activate_trendmaster(
 async def activate_scalperx(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
     _bot_id = "scalperx"
-    config = await _get_or_create_strategy(current_user, db, _bot_id)
-    risk   = await _get_or_create_risk(current_user, db, _bot_id)
+    config = await _get_or_create_strategy(current_user, db, _bot_id, account_mode)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id, account_mode)
 
     config.ema_fast              = 20
     config.ema_slow              = 5
@@ -404,7 +418,7 @@ async def activate_scalperx(
     risk.max_daily_loss_pct      = Decimal("0.03")
     risk.max_position_size_pct   = Decimal("0.10")
 
-    state = await _get_or_create_bot_state(current_user, db, _bot_id)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id, account_mode)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Mean Reversion activated — EUR/USD, EUR/GBP, USD/CHF, AUD/NZD"
@@ -427,10 +441,11 @@ async def activate_scalperx(
 async def activate_piphunter(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
     _bot_id = "piphunter"
-    config = await _get_or_create_strategy(current_user, db, _bot_id)
-    risk   = await _get_or_create_risk(current_user, db, _bot_id)
+    config = await _get_or_create_strategy(current_user, db, _bot_id, account_mode)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id, account_mode)
 
     config.ema_fast              = 14
     config.ema_slow              = 50
@@ -452,7 +467,7 @@ async def activate_piphunter(
     risk.max_daily_loss_pct      = Decimal("0.03")
     risk.max_position_size_pct   = Decimal("0.10")
 
-    state = await _get_or_create_bot_state(current_user, db, _bot_id)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id, account_mode)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Breakout bot activated — GBP/USD, EUR/USD, GBP/JPY, USD/JPY"
@@ -475,10 +490,11 @@ async def activate_piphunter(
 async def activate_cryptobot(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
     _bot_id = "cryptobot"
-    config = await _get_or_create_strategy(current_user, db, _bot_id)
-    risk   = await _get_or_create_risk(current_user, db, _bot_id)
+    config = await _get_or_create_strategy(current_user, db, _bot_id, account_mode)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id, account_mode)
 
     config.ema_fast              = 10
     config.ema_slow              = 100
@@ -500,7 +516,7 @@ async def activate_cryptobot(
     risk.max_daily_loss_pct      = Decimal("0.02")
     risk.max_position_size_pct   = Decimal("0.15")
 
-    state = await _get_or_create_bot_state(current_user, db, _bot_id)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id, account_mode)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Momentum activated — GBP/USD, EUR/USD, AUD/USD, USD/JPY, NZD/USD"
@@ -523,10 +539,11 @@ async def activate_cryptobot(
 async def activate_safeguard(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
     _bot_id = "safeguard"
-    config = await _get_or_create_strategy(current_user, db, _bot_id)
-    risk   = await _get_or_create_risk(current_user, db, _bot_id)
+    config = await _get_or_create_strategy(current_user, db, _bot_id, account_mode)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id, account_mode)
 
     config.ema_fast              = 50
     config.ema_slow              = 200
@@ -548,7 +565,7 @@ async def activate_safeguard(
     risk.max_daily_loss_pct      = Decimal("0.025")
     risk.max_position_size_pct   = Decimal("0.08")
 
-    state = await _get_or_create_bot_state(current_user, db, _bot_id)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id, account_mode)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "Carry Trade bot activated — AUD/JPY, NZD/JPY, GBP/JPY, USD/JPY"
@@ -571,10 +588,11 @@ async def activate_safeguard(
 async def activate_combo(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
     _bot_id = "combo"
-    config = await _get_or_create_strategy(current_user, db, _bot_id)
-    risk   = await _get_or_create_risk(current_user, db, _bot_id)
+    config = await _get_or_create_strategy(current_user, db, _bot_id, account_mode)
+    risk   = await _get_or_create_risk(current_user, db, _bot_id, account_mode)
 
     config.ema_fast              = 9
     config.ema_slow              = 200
@@ -596,7 +614,7 @@ async def activate_combo(
     risk.max_daily_loss_pct      = Decimal("0.03")
     risk.max_position_size_pct   = Decimal("0.10")
 
-    state = await _get_or_create_bot_state(current_user, db, _bot_id)
+    state = await _get_or_create_bot_state(current_user, db, _bot_id, account_mode)
     state.is_running  = True
     state.started_at  = datetime.now(timezone.utc)
     state.last_log    = "MasterBot activated — Multi-Strategy on EUR/USD, GBP/USD, AUD/JPY, GBP/JPY, USD/JPY, NZD/JPY"
@@ -620,8 +638,9 @@ async def stop_bot(
     bot_id: str = Query(..., description="Bot identifier"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> dict:
-    state = await _get_or_create_bot_state(current_user, db, bot_id)
+    state = await _get_or_create_bot_state(current_user, db, bot_id, account_mode)
     if not state.is_running:
         return {"message": "Bot is not running", "is_running": False}
     state.is_running = False

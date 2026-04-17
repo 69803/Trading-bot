@@ -17,18 +17,18 @@ from app.models.trade import Trade
 from app.services.market_data_router import market_data_router as market_data_service
 
 
-async def get_portfolio(db: AsyncSession, user_id: UUID) -> Portfolio:
-    """Load portfolio (with open positions) for the given user."""
+async def get_portfolio(db: AsyncSession, user_id: UUID, account_mode: str = "paper") -> Portfolio:
+    """Load portfolio for the given user and account mode."""
     result = await db.execute(
-        select(Portfolio).where(Portfolio.user_id == user_id)
+        select(Portfolio).where(Portfolio.user_id == user_id, Portfolio.account_mode == account_mode)
     )
     portfolio = result.scalars().first()
     if portfolio is None:
-        raise ValueError(f"No portfolio found for user {user_id}")
+        raise ValueError(f"No portfolio found for user {user_id} in mode '{account_mode}'")
     return portfolio
 
 
-async def get_portfolio_summary(db: AsyncSession, user_id: UUID) -> dict:
+async def get_portfolio_summary(db: AsyncSession, user_id: UUID, account_mode: str = "paper") -> dict:
     """
     Returns dashboard summary dict:
     {
@@ -37,7 +37,7 @@ async def get_portfolio_summary(db: AsyncSession, user_id: UUID) -> dict:
         win_rate, bot_running
     }
     """
-    portfolio = await get_portfolio(db, user_id)
+    portfolio = await get_portfolio(db, user_id, account_mode)
 
     # Open positions
     open_result = await db.execute(
@@ -104,9 +104,13 @@ async def get_portfolio_summary(db: AsyncSession, user_id: UUID) -> dict:
     win_count: int = win_result.scalar() or 0
     win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0.0
 
-    # Read real bot state
+    # Read real bot state (any bot running in this account mode)
     bot_result = await db.execute(
-        select(BotState).where(BotState.user_id == user_id)
+        select(BotState).where(
+            BotState.user_id == user_id,
+            BotState.account_mode == account_mode,
+            BotState.is_running == True,  # noqa: E712
+        )
     )
     bot_state: BotState | None = bot_result.scalars().first()
     bot_running = bool(bot_state and bot_state.is_running)

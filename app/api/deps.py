@@ -1,8 +1,9 @@
 """FastAPI dependency injection: DB session, current user, role guards."""
 
+from typing import Literal
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import verify_token
 from app.db.session import get_db
 from app.models.user import User
+
+AccountMode = Literal["paper", "live"]
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -62,6 +65,18 @@ async def get_current_active_user(
             detail="Inactive user account",
         )
     return user
+
+
+async def get_account_mode(
+    x_account_mode: str = Header(default="paper", alias="X-Account-Mode"),
+) -> AccountMode:
+    """
+    Read the trading account mode from the X-Account-Mode request header.
+
+    Returns 'paper' (default) or 'live'.  Any unrecognised value is silently
+    downgraded to 'paper' — never accidentally operate on real money.
+    """
+    return "live" if x_account_mode == "live" else "paper"
 
 
 async def get_admin_user(

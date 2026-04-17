@@ -50,6 +50,7 @@ async def create_order(
     event_context: str | None = None,
     is_paper: bool = True,
     bot_id: str | None = None,
+    account_mode: str = "paper",
 ) -> Order:
     """
     Create, validate, and (for market orders) immediately fill an order.
@@ -158,6 +159,7 @@ async def create_order(
             notional=float(investment_amount) if investment_amount else None,
             internal_order_id=str(order.id),
             client_order_id=str(order.id),
+            account_mode=account_mode,
         )
 
         broker_confirmed = bool(alpaca_result and alpaca_result.get("id"))
@@ -303,6 +305,7 @@ async def create_order(
                 qty=float(qty),
                 notional=float(invest_dec),
                 internal_order_id=str(order.id),
+                account_mode=account_mode,
             )
         except Exception as _alpaca_exc:
             log.warning(

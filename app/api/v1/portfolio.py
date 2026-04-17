@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import uuid as _uuid
 
-from app.api.deps import get_current_active_user, get_db
+from app.api.deps import get_account_mode, get_current_active_user, get_db
 from app.core.logger import get_logger
 
 log = get_logger(__name__)
@@ -71,15 +71,22 @@ def _position_to_out(p: Position) -> PositionOut:
     )
 
 
-async def _get_portfolio_or_404(user: User, db: AsyncSession) -> Portfolio:
+async def _get_portfolio_or_404(
+    user: User,
+    db: AsyncSession,
+    account_mode: str = "paper",
+) -> Portfolio:
     result = await db.execute(
-        select(Portfolio).where(Portfolio.user_id == user.id)
+        select(Portfolio).where(
+            Portfolio.user_id    == user.id,
+            Portfolio.account_mode == account_mode,
+        )
     )
     portfolio = result.scalars().first()
     if portfolio is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Portfolio not found for current user",
+            detail=f"Portfolio not found for mode '{account_mode}'",
         )
     return portfolio
 
@@ -87,9 +94,10 @@ async def _get_portfolio_or_404(user: User, db: AsyncSession) -> Portfolio:
 @router.get("", response_model=PortfolioOut, summary="Get portfolio details")
 async def get_portfolio(
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> PortfolioOut:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     # Update live prices then compute unrealised PnL
     await portfolio_service.update_position_prices(db, portfolio.id)
@@ -120,9 +128,10 @@ async def get_portfolio(
 @router.get("/summary", response_model=PortfolioSummary, summary="Portfolio summary stats")
 async def get_summary(
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> PortfolioSummary:
-    summary = await portfolio_service.get_portfolio_summary(db, user_id=current_user.id)
+    summary = await portfolio_service.get_portfolio_summary(db, user_id=current_user.id, account_mode=account_mode)
     return PortfolioSummary(
         balance=Decimal(str(summary["balance"])),
         equity=Decimal(str(summary["equity"])),
@@ -145,9 +154,10 @@ async def get_positions(
     limit: int = Query(100, ge=1, le=500),
     bot_id: str | None = Query(None, description="Filter by bot (omit for all bots)"),
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> List[PositionOut]:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     # Refresh current prices for open positions before returning
     await portfolio_service.update_position_prices(db, portfolio.id)
@@ -184,9 +194,10 @@ async def get_history(
     interval: str = Query("1d", description="Interval (unused, reserved for future grouping)"),
     limit: int = Query(90, ge=1, le=1000),
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> List[PortfolioHistoryPoint]:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     raw = await portfolio_service.get_portfolio_history(db, portfolio_id=portfolio.id, limit=limit)
     return [
         PortfolioHistoryPoint(
@@ -201,9 +212,10 @@ async def get_history(
 @router.get("/balance", response_model=BalanceOut, summary="Real-time balance snapshot")
 async def get_balance(
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> BalanceOut:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     await portfolio_service.update_position_prices(db, portfolio.id)
     # update_position_prices commits → expires all loaded objects; reload portfolio
     await db.refresh(portfolio)
@@ -236,9 +248,10 @@ async def get_balance(
 async def deposit(
     amount: float = Query(..., gt=0, description="Amount to deposit"),
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> BalanceOut:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     portfolio.cash_balance += Decimal(str(amount))
     portfolio.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -272,9 +285,10 @@ async def deposit(
 async def withdraw(
     amount: float = Query(..., gt=0, description="Amount to withdraw"),
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> BalanceOut:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     amount_dec = Decimal(str(amount))
     if amount_dec > portfolio.cash_balance:
         raise HTTPException(
@@ -318,9 +332,10 @@ async def withdraw(
 async def close_position(
     position_id: _uuid.UUID,
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> Position:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     result = await db.execute(
         select(Position).where(
@@ -375,11 +390,12 @@ async def close_position(
 )
 async def delete_all_closed_positions(
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete every closed position for the user. Open positions are untouched.
     Adjusts portfolio.realized_pnl to stay consistent."""
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     result = await db.execute(
         select(Position).where(
@@ -408,6 +424,7 @@ async def delete_all_closed_positions(
 async def delete_position(
     position_id: str,
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
@@ -421,7 +438,7 @@ async def delete_position(
         log.warning("DELETE position — invalid UUID", position_id=position_id)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid position id: {position_id!r}")
 
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     result = await db.execute(
         select(Position).where(

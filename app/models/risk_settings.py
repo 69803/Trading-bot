@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class RiskSettings(Base):
     __tablename__ = "risk_settings"
     __table_args__ = (
-        UniqueConstraint("user_id", "bot_id", name="uq_risk_settings_user_bot"),
+        UniqueConstraint("user_id", "bot_id", "account_mode", name="uq_risk_settings_user_bot_mode"),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -25,6 +25,7 @@ class RiskSettings(Base):
         index=True,
     )
     bot_id: Mapped[str] = mapped_column(String(50), nullable=False, default="trendmaster")
+    account_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper", index=True)
     max_position_size_pct: Mapped[Decimal] = mapped_column(
         Numeric(5, 4), default=Decimal("0.05"), nullable=False
     )

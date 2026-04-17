@@ -158,15 +158,17 @@ async def run_bot_cycle(db: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 
 async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
-    user_id = state.user_id
-    bot_id  = getattr(state, "bot_id", "trendmaster") or "trendmaster"
+    user_id      = state.user_id
+    bot_id       = getattr(state, "bot_id", "trendmaster") or "trendmaster"
+    account_mode = getattr(state, "account_mode", "paper") or "paper"
 
-    # Load strategy config for this specific bot
+    # Load strategy config for this specific bot and account mode
     log.debug("bot_service._run_user_cycle: querying StrategyConfig", user_id=str(user_id), bot_id=bot_id)
     sc_result = await db.execute(
         select(StrategyConfig).where(
             StrategyConfig.user_id == user_id,
             StrategyConfig.bot_id  == bot_id,
+            StrategyConfig.account_mode == account_mode,
         )
     )
     config: Optional[StrategyConfig] = sc_result.scalars().first()
@@ -175,23 +177,27 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
         state.last_log = "No strategy config or symbols"
         return
 
-    # Load portfolio — use .first() to tolerate accidental duplicate rows
+    # Load portfolio — filtered by account_mode
     log.debug("bot_service._run_user_cycle: querying Portfolio", user_id=str(user_id))
     port_result = await db.execute(
-        select(Portfolio).where(Portfolio.user_id == user_id)
+        select(Portfolio).where(
+            Portfolio.user_id == user_id,
+            Portfolio.account_mode == account_mode,
+        )
     )
     portfolio: Optional[Portfolio] = port_result.scalars().first()
     if portfolio is None:
-        log.warning("No portfolio found", user_id=str(user_id))
-        state.last_log = "No portfolio found"
+        log.warning("No portfolio found", user_id=str(user_id), account_mode=account_mode)
+        state.last_log = f"No portfolio found for mode '{account_mode}'"
         return
 
-    # Load risk settings for this specific bot
+    # Load risk settings for this specific bot and account mode
     log.debug("bot_service._run_user_cycle: querying RiskSettings", user_id=str(user_id), bot_id=bot_id)
     risk_result = await db.execute(
         select(RiskSettings).where(
             RiskSettings.user_id == user_id,
             RiskSettings.bot_id  == bot_id,
+            RiskSettings.account_mode == account_mode,
         )
     )
     risk: Optional[RiskSettings] = risk_result.scalars().first()
