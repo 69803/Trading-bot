@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import get_account_mode, get_current_user, get_db
 from app.models.performance_snapshot import PerformanceSnapshot
 from app.models.portfolio import Portfolio
 from app.models.user import User
@@ -49,13 +49,13 @@ router = APIRouter()
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _get_portfolio(db: AsyncSession, user: User) -> Portfolio:
+async def _get_portfolio(db: AsyncSession, user: User, account_mode: str = "paper") -> Portfolio:
     result = await db.execute(
-        select(Portfolio).where(Portfolio.user_id == user.id)
+        select(Portfolio).where(Portfolio.user_id == user.id, Portfolio.account_mode == account_mode)
     )
     portfolio = result.scalars().first()
     if portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+        raise HTTPException(status_code=404, detail=f"Portfolio not found for mode '{account_mode}'")
     return portfolio
 
 
@@ -138,8 +138,9 @@ class SnapshotListResponse(BaseModel):
 async def get_stats(
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> PerformanceStats:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     return await get_performance_stats(db, portfolio.id)
 
 
@@ -156,8 +157,9 @@ async def get_daily_pnl(
     days: int = Query(default=30, ge=1, le=365),
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> list[DailyPnL]:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     return await get_daily_pnl_series(db, portfolio.id, days=days)
 
 
@@ -175,8 +177,9 @@ async def list_snapshots(
     limit: int = Query(default=500, ge=1, le=2000),
     db:    AsyncSession = Depends(get_db),
     user:  User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> SnapshotListResponse:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     snaps = await get_performance_snapshots(db, portfolio.id, days=days, limit=limit)
     items = [PerformanceSnapshotOut.from_orm(s) for s in snaps]
     return SnapshotListResponse(items=items, total=len(items))
@@ -191,8 +194,9 @@ async def list_snapshots(
 async def get_latest_snapshot(
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> PerformanceSnapshotOut:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     snaps = await get_performance_snapshots(db, portfolio.id, days=365, limit=1)
     if not snaps:
         raise HTTPException(
@@ -215,8 +219,9 @@ async def get_latest_snapshot(
 async def force_snapshot(
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> PerformanceSnapshotOut:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     snap = await save_performance_snapshot(
         db, portfolio.id, min_interval_seconds=0
     )
@@ -274,10 +279,11 @@ async def get_daily_performance(
                                   "Legacy rows with null is_paper are treated as paper."),
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> list[DailyPerformanceOut]:
     if mode not in ("all", "paper", "live"):
         raise HTTPException(status_code=422, detail="mode must be 'all', 'paper', or 'live'")
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     return await compute_daily_performance(db, portfolio.id, days=days, mode=mode)
 
 
@@ -299,10 +305,11 @@ async def get_trade_log_endpoint(
                                   "Legacy rows with null is_paper are treated as paper."),
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> list[TradeLogEntry]:
     if mode not in ("all", "paper", "live"):
         raise HTTPException(status_code=422, detail="mode must be 'all', 'paper', or 'live'")
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     return await get_trade_log(db, portfolio.id, days=days, mode=mode)
 
 
@@ -320,8 +327,9 @@ async def get_trade_log_endpoint(
 async def save_daily_snapshot(
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> DailyPerformanceSnapshotOut:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     row = await save_daily_performance_snapshot(db, portfolio.id)
     await db.commit()
     return DailyPerformanceSnapshotOut(
@@ -358,10 +366,11 @@ async def list_daily_snapshots(
                                   "Legacy rows with null is_paper are treated as paper."),
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> list[DailyPerformanceSnapshotOut]:
     if mode not in ("all", "paper", "live"):
         raise HTTPException(status_code=422, detail="mode must be 'all', 'paper', or 'live'")
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     rows = await get_daily_performance_snapshots(db, portfolio.id, days=days, mode=mode)
 
     def _serialize(r) -> DailyPerformanceSnapshotOut:
@@ -415,8 +424,9 @@ async def list_daily_snapshots(
 async def get_by_symbol(
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> list[SymbolStats]:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     return await get_performance_by_symbol(db, portfolio.id)
 
 
@@ -432,8 +442,9 @@ async def get_by_symbol(
 async def get_by_hour(
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> list[HourStats]:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     return await get_performance_by_open_hour(db, portfolio.id)
 
 
@@ -458,6 +469,7 @@ async def get_by_event_context(
                                 description="Half-width of event search window in minutes"),
     db:   AsyncSession = Depends(get_db),
     user: User         = Depends(get_current_user),
+    account_mode: str   = Depends(get_account_mode),
 ) -> list[EventContextStats]:
-    portfolio = await _get_portfolio(db, user)
+    portfolio = await _get_portfolio(db, user, account_mode)
     return await get_performance_by_event_context(db, portfolio.id, window_minutes=window_minutes)

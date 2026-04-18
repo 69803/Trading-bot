@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_active_user, get_db
+from app.api.deps import get_account_mode, get_current_active_user, get_db
 from app.models.portfolio import Portfolio
 from app.models.trade import Trade
 from app.models.user import User
@@ -15,13 +15,15 @@ from app.schemas.trade import TradeListResponse, TradeOut
 router = APIRouter()
 
 
-async def _get_portfolio_or_404(user: User, db: AsyncSession) -> Portfolio:
-    result = await db.execute(select(Portfolio).where(Portfolio.user_id == user.id))
+async def _get_portfolio_or_404(user: User, db: AsyncSession, account_mode: str = "paper") -> Portfolio:
+    result = await db.execute(
+        select(Portfolio).where(Portfolio.user_id == user.id, Portfolio.account_mode == account_mode)
+    )
     portfolio = result.scalars().first()
     if portfolio is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Portfolio not found",
+            detail=f"Portfolio not found for mode '{account_mode}'",
         )
     return portfolio
 
@@ -34,8 +36,9 @@ async def list_trades(
     bot_id: str | None = Query(None, description="Filter by bot (omit for all bots)"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> TradeListResponse:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     stmt = select(Trade).where(Trade.portfolio_id == portfolio.id)
     if symbol:
@@ -64,8 +67,9 @@ async def get_trade(
     trade_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
+    account_mode: str = Depends(get_account_mode),
 ) -> Trade:
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
 
     result = await db.execute(
         select(Trade).where(

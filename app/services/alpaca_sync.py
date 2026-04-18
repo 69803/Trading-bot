@@ -58,13 +58,21 @@ from app.models.trade import Trade
 log = get_logger(__name__)
 
 PAPER_BASE_URL = "https://paper-api.alpaca.markets"
+LIVE_BASE_URL  = "https://api.alpaca.markets"
 
 
 # ---------------------------------------------------------------------------
 # Alpaca HTTP helpers (synchronous — run via asyncio.to_thread)
 # ---------------------------------------------------------------------------
 
-def _headers() -> dict:
+def _headers(account_mode: str = "paper") -> dict:
+    """Return auth headers for the correct Alpaca environment."""
+    if account_mode == "live":
+        return {
+            "APCA-API-KEY-ID":     settings.ALPACA_LIVE_API_KEY,
+            "APCA-API-SECRET-KEY": settings.ALPACA_LIVE_SECRET_KEY,
+            "Accept":              "application/json",
+        }
     return {
         "APCA-API-KEY-ID":     settings.ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": settings.ALPACA_SECRET_KEY,
@@ -72,12 +80,16 @@ def _headers() -> dict:
     }
 
 
-def _fetch_by_broker_id(broker_order_id: str) -> Optional[dict]:
+def _base_url(account_mode: str = "paper") -> str:
+    return LIVE_BASE_URL if account_mode == "live" else PAPER_BASE_URL
+
+
+def _fetch_by_broker_id(broker_order_id: str, account_mode: str = "paper") -> Optional[dict]:
     """GET /v2/orders/{broker_order_id} — direct O(1) lookup."""
-    url = f"{PAPER_BASE_URL}/v2/orders/{broker_order_id}"
+    url = f"{_base_url(account_mode)}/v2/orders/{broker_order_id}"
     try:
         with httpx.Client(timeout=10.0) as client:
-            resp = client.get(url, headers=_headers())
+            resp = client.get(url, headers=_headers(account_mode))
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code == 404:
@@ -85,6 +97,7 @@ def _fetch_by_broker_id(broker_order_id: str) -> Optional[dict]:
         log.warning(
             "Alpaca sync: unexpected status on order fetch",
             broker_order_id=broker_order_id,
+            account_mode=account_mode,
             http_status=resp.status_code,
             body=resp.text[:200],
         )
@@ -94,23 +107,23 @@ def _fetch_by_broker_id(broker_order_id: str) -> Optional[dict]:
         return None
 
 
-def _fetch_by_client_order_id(client_order_id: str) -> Optional[dict]:
+def _fetch_by_client_order_id(client_order_id: str, account_mode: str = "paper") -> Optional[dict]:
     """
     Scan recent Alpaca orders (status=all, last 50) matching client_order_id.
 
     Used as fallback when broker_order_id was not stored (e.g. Alpaca was
     unreachable at submission time).
     """
-    url = f"{PAPER_BASE_URL}/v2/orders"
+    url = f"{_base_url(account_mode)}/v2/orders"
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(
                 url,
-                headers=_headers(),
+                headers=_headers(account_mode),
                 params={"status": "all", "limit": 50, "direction": "desc"},
             )
         if resp.status_code != 200:
-            log.warning("Alpaca sync: order list failed", http_status=resp.status_code)
+            log.warning("Alpaca sync: order list failed", http_status=resp.status_code, account_mode=account_mode)
             return None
         orders = resp.json()
         if not isinstance(orders, list):
@@ -251,9 +264,15 @@ async def _apply_alpaca_fill(
     await db.flush()
 
     # ── Open or close Position ───────────────────────────────────────────────
+    # Load risk settings scoped to this portfolio's account_mode so that paper
+    # and live risk configs don't bleed into each other.
+    portfolio_mode = getattr(portfolio, "account_mode", "paper") or "paper"
     rs_result = await db.execute(
         select(RiskSettings)
-        .where(RiskSettings.user_id == portfolio.user_id)
+        .where(
+            RiskSettings.user_id == portfolio.user_id,
+            RiskSettings.account_mode == portfolio_mode,
+        )
         .order_by(RiskSettings.created_at.asc())
     )
     risk = rs_result.scalars().first()
@@ -335,35 +354,60 @@ async def sync_pending_alpaca_orders() -> None:
     """
     Poll Alpaca for the status of every local pending manual equity order.
 
+    Each order is queried against the correct Alpaca endpoint (paper or live)
+    based on the account_mode of the portfolio the order belongs to.
+
     Called by the scheduler every 2 minutes. Uses its own DB session per order
     so a failure on one order never rolls back the others.
 
     Skips silently if:
       - ALPACA_BROKER_ENABLED is false
-      - credentials are not configured
+      - no paper credentials AND no live credentials are configured
       - no pending manual orders exist
     """
     if not settings.ALPACA_BROKER_ENABLED:
         return
-    if not settings.ALPACA_API_KEY or not settings.ALPACA_SECRET_KEY:
+    if not settings.ALPACA_API_KEY and not settings.ALPACA_LIVE_API_KEY:
         return
 
-    # ── Collect pending manual orders ────────────────────────────────────────
+    # ── Collect pending manual orders with their portfolio account_mode ───────
     async with AsyncSessionFactory() as db:
         result = await db.execute(
-            select(Order).where(
+            select(Order, Portfolio.account_mode).
+            join(Portfolio, Portfolio.id == Order.portfolio_id).
+            where(
                 Order.status == "pending",
                 Order.bot_id.is_(None),
             )
         )
-        pending_orders = result.scalars().all()
+        rows = result.all()
+
+    # rows = list of (Order, account_mode_str)
+    pending_orders = [(row[0], row[1] or "paper") for row in rows]
 
     if not pending_orders:
         return
 
     log.info("Alpaca sync: checking pending orders", count=len(pending_orders))
 
-    for order in pending_orders:
+    for order, account_mode in pending_orders:
+        # Skip live orders if live credentials are not configured
+        if account_mode == "live" and (
+            not settings.ALPACA_LIVE_API_KEY or not settings.ALPACA_LIVE_SECRET_KEY
+        ):
+            log.warning(
+                "Alpaca sync: skipping live order — LIVE credentials not configured",
+                order_id=str(order.id),
+                symbol=order.symbol,
+            )
+            continue
+
+        # Skip paper orders if paper credentials are not configured
+        if account_mode == "paper" and (
+            not settings.ALPACA_API_KEY or not settings.ALPACA_SECRET_KEY
+        ):
+            continue
+
         # ── Per-order session: isolates each fill commit ──────────────────────
         async with AsyncSessionFactory() as db:
             try:
@@ -373,14 +417,15 @@ async def sync_pending_alpaca_orders() -> None:
                 if fresh_order is None or fresh_order.status != "pending":
                     continue
 
-                # ── Query Alpaca ──────────────────────────────────────────────
+                # ── Query the correct Alpaca endpoint for this order's mode ───
                 broker_id = fresh_order.broker_order_id
                 if broker_id:
-                    alpaca_data = await asyncio.to_thread(_fetch_by_broker_id, broker_id)
-                else:
-                    # Fallback: search by client_order_id = str(order.id)
                     alpaca_data = await asyncio.to_thread(
-                        _fetch_by_client_order_id, str(fresh_order.id)
+                        _fetch_by_broker_id, broker_id, account_mode
+                    )
+                else:
+                    alpaca_data = await asyncio.to_thread(
+                        _fetch_by_client_order_id, str(fresh_order.id), account_mode
                     )
 
                 if alpaca_data is None:

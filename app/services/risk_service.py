@@ -16,11 +16,11 @@ from app.models.risk_settings import RiskSettings
 from app.models.trade import Trade
 
 
-async def get_risk_settings(db: AsyncSession, user_id: UUID) -> RiskSettings:
-    """Load risk settings, creating defaults if not present."""
+async def get_risk_settings(db: AsyncSession, user_id: UUID, account_mode: str = "paper") -> RiskSettings:
+    """Load risk settings for the given account mode, creating defaults if not present."""
     result = await db.execute(
         select(RiskSettings)
-        .where(RiskSettings.user_id == user_id)
+        .where(RiskSettings.user_id == user_id, RiskSettings.account_mode == account_mode)
         .order_by(RiskSettings.created_at.asc())
     )
     risk: RiskSettings | None = result.scalars().first()
@@ -28,6 +28,7 @@ async def get_risk_settings(db: AsyncSession, user_id: UUID) -> RiskSettings:
         risk = RiskSettings(
             id=uuid4(),
             user_id=user_id,
+            account_mode=account_mode,
             max_position_size_pct=Decimal("0.05"),
             max_daily_loss_pct=Decimal("0.02"),
             max_open_positions=10,
@@ -44,10 +45,10 @@ async def get_risk_settings(db: AsyncSession, user_id: UUID) -> RiskSettings:
 
 
 async def update_risk_settings(
-    db: AsyncSession, user_id: UUID, data: dict
+    db: AsyncSession, user_id: UUID, data: dict, account_mode: str = "paper"
 ) -> RiskSettings:
-    """Update risk settings."""
-    risk = await get_risk_settings(db, user_id)
+    """Update risk settings for the given account mode."""
+    risk = await get_risk_settings(db, user_id, account_mode)
     decimal_fields = {
         "max_position_size_pct",
         "max_daily_loss_pct",
@@ -72,16 +73,16 @@ async def update_risk_settings(
     return risk
 
 
-async def get_risk_status(db: AsyncSession, user_id: UUID) -> dict:
+async def get_risk_status(db: AsyncSession, user_id: UUID, account_mode: str = "paper") -> dict:
     """
-    Returns current risk exposure status dict.
+    Returns current risk exposure status dict for the given account mode.
     """
-    halted, halt_reason = await is_trading_halted(db, user_id)
-    risk = await get_risk_settings(db, user_id)
+    halted, halt_reason = await is_trading_halted(db, user_id, account_mode)
+    risk = await get_risk_settings(db, user_id, account_mode)
 
-    # Load portfolio
+    # Load portfolio for this account mode
     port_result = await db.execute(
-        select(Portfolio).where(Portfolio.user_id == user_id)
+        select(Portfolio).where(Portfolio.user_id == user_id, Portfolio.account_mode == account_mode)
     )
     portfolio: Portfolio | None = port_result.scalars().first()
     equity = float(portfolio.cash_balance) if portfolio else 0.0
@@ -140,13 +141,13 @@ async def get_risk_status(db: AsyncSession, user_id: UUID) -> dict:
 
 
 async def is_trading_halted(
-    db: AsyncSession, user_id: UUID
+    db: AsyncSession, user_id: UUID, account_mode: str = "paper"
 ) -> Tuple[bool, str | None]:
-    """Check if trading should be halted based on risk settings."""
-    risk = await get_risk_settings(db, user_id)
+    """Check if trading should be halted based on risk settings for the given account mode."""
+    risk = await get_risk_settings(db, user_id, account_mode)
 
     port_result = await db.execute(
-        select(Portfolio).where(Portfolio.user_id == user_id)
+        select(Portfolio).where(Portfolio.user_id == user_id, Portfolio.account_mode == account_mode)
     )
     portfolio: Portfolio | None = port_result.scalars().first()
     if portfolio is None:

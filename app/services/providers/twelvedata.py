@@ -1,12 +1,13 @@
 """
-Twelve Data market data provider — Forex + Commodities.
+Twelve Data market data provider — Forex + Commodities + Stocks.
 
 Endpoints used:
   Base: https://api.twelvedata.com
 
   Latest price:
     GET /price?symbol={symbol}&apikey={key}
-    → {"price": "1.08245"}
+    → {"price": "1.08245"}          (forex / commodity)
+    → {"price": "182.43"}           (stocks — same endpoint)
 
   Time series (candles):
     GET /time_series?symbol={symbol}&interval={tf}&outputsize={n}&apikey={key}
@@ -17,14 +18,17 @@ Auth: ?apikey=<TWELVE_DATA_API_KEY>  (query-param)
 
 Free plan limits:
   800 API credits/day · 8 requests/minute
-  Forex: real-time (no delay)
-  Commodities: real-time on free plan
+  Forex / Commodities: real-time (no delay)
+  Stocks: 15-minute delayed on free plan
 
 Symbols supported:
   Forex  — EUR/USD, GBP/USD, USD/JPY, USD/CHF, AUD/USD, USD/CAD, NZD/USD,
             EUR/GBP, EUR/JPY, GBP/JPY, EUR/CHF, AUD/JPY, GBP/CHF
   Metals — XAU/USD (Gold), XAG/USD (Silver), XPT/USD (Platinum)
   Energy — WTI/USD (WTI Crude), BRENT/USD (Brent), XNG/USD (Natural Gas)
+  Stocks — AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, AMD, NFLX, INTC,
+            JPM, V, MA, BAC, WMT, DIS, PYPL, CRM, UBER, BABA,
+            SPY, QQQ, IWM, VTI, GLD (ETFs)
 
 Fallback:
   GBM simulation when API key is missing or request fails.
@@ -70,7 +74,17 @@ COMMODITY_SYMBOLS: List[str] = [
     "XNG/USD",   # Natural Gas
 ]
 
-SYMBOLS: List[str] = FOREX_SYMBOLS + COMMODITY_SYMBOLS
+STOCK_SYMBOLS: List[str] = [
+    # Tech mega-caps
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD",
+    "NFLX", "INTC",
+    # Financials / other large-caps
+    "JPM", "V", "MA", "BAC", "WMT", "DIS", "PYPL", "CRM", "UBER", "BABA",
+    # ETFs
+    "SPY", "QQQ", "IWM", "VTI", "GLD",
+]
+
+SYMBOLS: List[str] = FOREX_SYMBOLS + COMMODITY_SYMBOLS + STOCK_SYMBOLS
 
 # Twelve Data interval strings
 TWELVE_DATA_INTERVAL: Dict[str, str] = {
@@ -106,6 +120,17 @@ FALLBACK_BASE_PRICES: Dict[str, float] = {
     "XAU/USD": 2300.0,  "XAG/USD": 27.00,   "XPT/USD": 900.0,
     # Commodities — Energy
     "WTI/USD":  80.0,   "BRENT/USD": 84.0,  "XNG/USD": 2.50,
+    # Stocks — Tech mega-caps
+    "AAPL": 185.0,  "MSFT": 415.0,  "GOOGL": 170.0,  "AMZN": 180.0,
+    "META": 500.0,  "NVDA": 850.0,  "TSLA": 175.0,   "AMD":  165.0,
+    "NFLX": 615.0,  "INTC":  35.0,
+    # Stocks — Financials / other large-caps
+    "JPM":  195.0,  "V":    275.0,  "MA":   465.0,   "BAC":   37.0,
+    "WMT":  170.0,  "DIS":  100.0,  "PYPL":  63.0,   "CRM":  295.0,
+    "UBER":  75.0,  "BABA":  75.0,
+    # ETFs
+    "SPY":  515.0,  "QQQ":  440.0,  "IWM":  200.0,   "VTI":  250.0,
+    "GLD":  220.0,
 }
 
 FALLBACK_VOLATILITY: Dict[str, float] = {
@@ -121,6 +146,16 @@ FALLBACK_VOLATILITY: Dict[str, float] = {
     # Commodities — also scaled down by 10× to match intended per-tick granularity
     "XAU/USD": 0.0008, "XAG/USD": 0.0012, "XPT/USD": 0.0010,
     "WTI/USD": 0.0015, "BRENT/USD": 0.0014, "XNG/USD": 0.0025,
+    # Stocks — per-step vol (~0.001 = ~1.5% daily at 480 ticks/day)
+    "AAPL": 0.0010, "MSFT": 0.0010, "GOOGL": 0.0010, "AMZN": 0.0012,
+    "META": 0.0013, "NVDA": 0.0018, "TSLA": 0.0020,  "AMD":  0.0018,
+    "NFLX": 0.0015, "INTC": 0.0012,
+    "JPM":  0.0010, "V":    0.0008, "MA":   0.0008,  "BAC":  0.0012,
+    "WMT":  0.0007, "DIS":  0.0012, "PYPL": 0.0015,  "CRM":  0.0013,
+    "UBER": 0.0015, "BABA": 0.0015,
+    # ETFs — lower vol than individual stocks
+    "SPY":  0.0006, "QQQ":  0.0007, "IWM":  0.0008,  "VTI":  0.0006,
+    "GLD":  0.0007,
 }
 
 FALLBACK_SPREAD_PCT = 0.0002
