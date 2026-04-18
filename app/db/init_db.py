@@ -252,8 +252,19 @@ _BOT_ID_DDL = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_states_user_bot_mode       ON bot_states       (user_id, bot_id, account_mode)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_configs_user_bot_mode ON strategy_configs (user_id, bot_id, account_mode)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_settings_user_bot_mode    ON risk_settings    (user_id, bot_id, account_mode)",
-    # portfolios: drop old single-user_id unique constraint if it exists
+    # portfolios: remove every known single-column unique index/constraint on
+    # user_id BEFORE creating the composite (user_id, account_mode) index.
+    #
+    # Production Render DB uses the name "ix_portfolios_user_id" (SQLAlchemy
+    # default for index=True on the user_id column).  Without dropping it first,
+    # the live-portfolio bootstrap INSERT raises:
+    #   duplicate key value violates unique constraint "ix_portfolios_user_id"
+    #
+    # All DROP statements are IF EXISTS so they are safe on DBs that never had
+    # the constraint, or where a previous migration already cleaned it up.
     "ALTER TABLE portfolios DROP CONSTRAINT IF EXISTS portfolios_user_id_key",
+    "ALTER TABLE portfolios DROP CONSTRAINT IF EXISTS ix_portfolios_user_id",
+    "DROP INDEX IF EXISTS ix_portfolios_user_id",
     "DROP INDEX IF EXISTS uq_portfolios_user",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_portfolios_user_mode ON portfolios (user_id, account_mode)",
 ]
