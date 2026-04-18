@@ -23,6 +23,7 @@ from app.models.position import Position
 from app.models.user import User
 from app.schemas.portfolio import (
     BalanceOut,
+    LiveBalanceOut,
     PortfolioHistoryPoint,
     PortfolioOut,
     PortfolioSummary,
@@ -242,6 +243,90 @@ async def get_balance(
         unrealized_pnl=unrealized_dec,
         realized_pnl=portfolio.realized_pnl,
     )
+
+
+@router.get("/live-balance", response_model=LiveBalanceOut, summary="Sync live balance from Alpaca")
+async def get_live_balance(
+    current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
+    db: AsyncSession = Depends(get_db),
+) -> LiveBalanceOut:
+    """
+    Fetch real account balance from Alpaca GET /v2/account and persist it
+    to the local live portfolio so the rest of the app stays consistent.
+
+    Fields are sourced from Alpaca directly — no local invention:
+      cash_balance  ← Alpaca `cash`   (settled cash)
+      equity        ← Alpaca `equity` (cash + positions at market value)
+      buying_power  ← Alpaca `buying_power`
+
+    If Alpaca is unreachable, the last locally-cached value is returned
+    with stale=True so the frontend can show a warning.
+
+    For paper mode this endpoint still works — it reads from the local DB
+    (no Alpaca call) and returns stale=False, source="local_cache".
+    """
+    from app.services.alpaca_broker import fetch_account_balance
+
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
+
+    if account_mode == "live":
+        alpaca_data = await fetch_account_balance("live")
+
+        if alpaca_data:
+            cash         = Decimal(str(alpaca_data.get("cash", "0") or "0"))
+            equity       = Decimal(str(alpaca_data.get("equity", "0") or "0"))
+            buying_power = Decimal(str(alpaca_data.get("buying_power", "0") or "0"))
+
+            # Persist real Alpaca cash to local DB so order risk checks are accurate
+            portfolio.cash_balance = cash
+            portfolio.updated_at   = datetime.now(timezone.utc)
+            await db.commit()
+            await db.refresh(portfolio)
+
+            log.info(
+                "LIVE BALANCE SYNCED from Alpaca",
+                user_id=str(current_user.id),
+                cash=float(cash),
+                equity=float(equity),
+                buying_power=float(buying_power),
+            )
+            return LiveBalanceOut(
+                cash_balance=cash,
+                equity=equity,
+                buying_power=buying_power,
+                unrealized_pnl=equity - cash,
+                realized_pnl=portfolio.realized_pnl,
+                stale=False,
+                source="alpaca_live",
+            )
+        else:
+            # Alpaca unreachable — return cached value with stale flag
+            log.warning(
+                "LIVE BALANCE: Alpaca unreachable — returning cached value",
+                user_id=str(current_user.id),
+                cached_cash=float(portfolio.cash_balance),
+            )
+            return LiveBalanceOut(
+                cash_balance=portfolio.cash_balance,
+                equity=portfolio.cash_balance,
+                buying_power=portfolio.cash_balance,
+                unrealized_pnl=Decimal("0"),
+                realized_pnl=portfolio.realized_pnl,
+                stale=True,
+                source="local_cache",
+            )
+    else:
+        # Paper mode — return local balance, no Alpaca call
+        return LiveBalanceOut(
+            cash_balance=portfolio.cash_balance,
+            equity=portfolio.cash_balance,
+            buying_power=portfolio.cash_balance,
+            unrealized_pnl=Decimal("0"),
+            realized_pnl=portfolio.realized_pnl,
+            stale=False,
+            source="local_cache",
+        )
 
 
 @router.post("/deposit", response_model=BalanceOut, summary="Add funds to portfolio")

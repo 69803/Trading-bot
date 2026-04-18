@@ -44,6 +44,26 @@ class BalanceOut(BaseModel):
     realized_pnl: Decimal
 
 
+class LiveBalanceOut(BaseModel):
+    """
+    Real-time balance for LIVE mode — sourced from Alpaca GET /v2/account.
+
+    cash_balance  = Alpaca `cash`   (settled cash)
+    equity        = Alpaca `equity` (cash + open positions at market value)
+    buying_power  = Alpaca `buying_power`
+    unrealized_pnl = equity - cash_balance
+    stale         = True when Alpaca was unreachable; values are last known cache
+    source        = "alpaca_live" | "local_cache"
+    """
+    cash_balance: Decimal
+    equity: Decimal
+    buying_power: Decimal
+    unrealized_pnl: Decimal
+    realized_pnl: Decimal
+    stale: bool
+    source: str
+
+
 class PositionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

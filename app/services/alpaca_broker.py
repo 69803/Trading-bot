@@ -37,9 +37,10 @@ log = get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-PAPER_BASE_URL = "https://paper-api.alpaca.markets"
-LIVE_BASE_URL  = "https://api.alpaca.markets"
-ORDERS_PATH    = "/v2/orders"
+PAPER_BASE_URL   = "https://paper-api.alpaca.markets"
+LIVE_BASE_URL    = "https://api.alpaca.markets"
+ORDERS_PATH      = "/v2/orders"
+ACCOUNT_PATH     = "/v2/account"
 
 # Symbols that must NOT be sent to Alpaca (they don't trade there)
 _CRYPTO_SUFFIXES = {"USDT", "USDC", "BTC", "ETH", "BNB", "SOL", "ADA",
@@ -246,5 +247,66 @@ async def submit_order_to_alpaca(
             submitted_at=submitted_at,
             status="error",
             error_message=str(exc),
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Account balance (balance sync — uses GET /v2/account)
+# ---------------------------------------------------------------------------
+
+def _fetch_account_sync(account_mode: str = "live") -> dict:
+    """GET /v2/account — synchronous. Returns raw Alpaca account dict."""
+    base_url = LIVE_BASE_URL if account_mode == "live" else PAPER_BASE_URL
+    url = f"{base_url}{ACCOUNT_PATH}"
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(url, headers=_build_headers(account_mode))
+    if resp.status_code == 200:
+        return resp.json()
+    try:
+        detail = resp.json().get("message", resp.text)
+    except Exception:
+        detail = resp.text
+    raise RuntimeError(f"Alpaca /v2/account HTTP {resp.status_code}: {detail}")
+
+
+async def fetch_account_balance(account_mode: str = "live") -> Optional[dict]:
+    """
+    Fetch real account balance from Alpaca GET /v2/account.
+
+    Relevant fields in the response:
+      cash          — settled cash available for withdrawal/trading
+      buying_power  — total available buying power (may be 2x-4x cash for margin)
+      equity        — total portfolio value (cash + open positions at market value)
+
+    Returns None when credentials are missing or the request fails.
+    Never raises — all exceptions are caught and logged.
+    """
+    if account_mode == "live":
+        if not settings.ALPACA_LIVE_API_KEY or not settings.ALPACA_LIVE_SECRET_KEY:
+            log.warning(
+                "ALPACA: live balance fetch skipped — LIVE credentials not configured",
+                account_mode="live",
+            )
+            return None
+    else:
+        if not settings.ALPACA_API_KEY or not settings.ALPACA_SECRET_KEY:
+            return None
+
+    try:
+        data = await asyncio.to_thread(_fetch_account_sync, account_mode)
+        log.info(
+            "ALPACA: account balance fetched",
+            account_mode=account_mode,
+            cash=data.get("cash"),
+            buying_power=data.get("buying_power"),
+            equity=data.get("equity"),
+        )
+        return data
+    except Exception as exc:
+        log.warning(
+            "ALPACA: account balance fetch failed",
+            account_mode=account_mode,
+            error=str(exc),
         )
         return None
