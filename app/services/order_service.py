@@ -1,4 +1,12 @@
-"""Order service: placing, cancelling and listing orders for paper trading.
+"""Order service: placing, cancelling and listing orders.
+
+LIVE MODE GUARANTEE
+-------------------
+When account_mode='live', no local simulation is ever performed.
+Every order — regardless of bot_id, symbol type, or ALPACA_BROKER_ENABLED —
+is submitted to Alpaca live as the source of truth.  If Alpaca rejects or
+is unreachable, the order is rejected locally.  No Trade, no Position, no
+cash debit ever occurs locally before Alpaca confirms a fill via alpaca_sync.
 
 IQ Option-style investment flow:
   - User specifies investment_amount (e.g. $200)
@@ -195,7 +203,82 @@ async def create_order(
         await db.refresh(order)
         return order
 
-    # ── Create pending order ─────────────────────────────────────────────────
+    # ── LIVE MODE HARD GUARD ─────────────────────────────────────────────────
+    # account_mode='live' must NEVER reach the local simulation path below.
+    # This guard catches every case the Alpaca-first branch above misses:
+    #   • bot orders (bot_id is not None)
+    #   • non-US-equity symbols
+    #   • ALPACA_BROKER_ENABLED=False
+    #   • limit / stop order_type
+    # All live orders go to Alpaca live as source of truth.  If Alpaca fails,
+    # the order is rejected — no simulation, no local fill, no cash debit.
+    if account_mode == "live":
+        now = datetime.now(timezone.utc)
+        order = Order(
+            id=uuid4(),
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            investment_amount=Decimal(str(investment_amount)) if investment_amount else None,
+            quantity=est_qty,
+            filled_quantity=Decimal("0"),
+            limit_price=Decimal(str(limit_price)) if limit_price else None,
+            status="pending",
+            bot_id=bot_id,
+            submitted_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(order)
+        await db.flush()
+
+        alpaca_result = await submit_order_to_alpaca(
+            symbol=symbol,
+            side=side,
+            qty=float(est_qty),
+            notional=float(investment_amount) if investment_amount else None,
+            internal_order_id=str(order.id),
+            client_order_id=str(order.id),
+            account_mode="live",
+        )
+
+        broker_confirmed = bool(alpaca_result and alpaca_result.get("id"))
+
+        if broker_confirmed:
+            order.broker_order_id = alpaca_result.get("id")       # type: ignore[union-attr]
+            order.alpaca_status   = alpaca_result.get("status")   # type: ignore[union-attr]
+            log.info(
+                "ORDER SERVICE: live order queued in Alpaca (no local fill)",
+                order_id=str(order.id),
+                symbol=symbol,
+                side=side,
+                bot_id=bot_id,
+                broker_order_id=order.broker_order_id,
+                alpaca_status=order.alpaca_status,
+            )
+        else:
+            order.status           = "rejected"
+            order.rejection_reason = (
+                "Live order rejected — Alpaca unreachable or rejected the order. "
+                "No simulation is performed in live mode."
+            )
+            order.alpaca_status    = None
+            order.updated_at       = datetime.now(timezone.utc)
+            log.warning(
+                "ORDER SERVICE: live Alpaca submission failed — order rejected (no fallback)",
+                order_id=str(order.id),
+                symbol=symbol,
+                side=side,
+                bot_id=bot_id,
+                alpaca_result=str(alpaca_result),
+            )
+
+        await db.commit()
+        await db.refresh(order)
+        return order
+
+    # ── Create pending order (PAPER MODE ONLY — simulation path) ────────────
     order = Order(
         id=uuid4(),
         portfolio_id=portfolio_id,
