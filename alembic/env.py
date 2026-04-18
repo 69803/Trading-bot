@@ -60,7 +60,8 @@ import app.models.market_price  # noqa: F401, E402
 import app.models.historical_event  # noqa: F401, E402
 import app.models.performance_snapshot  # noqa: F401, E402
 import app.models.daily_performance_summary  # noqa: F401, E402
-import app.models.bot_log  # noqa: F401, E402
+import app.models.bot_log    # noqa: F401, E402
+import app.models.custom_bot  # noqa: F401, E402
 
 target_metadata = Base.metadata
 
