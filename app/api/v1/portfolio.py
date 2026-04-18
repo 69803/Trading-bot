@@ -251,6 +251,11 @@ async def deposit(
     account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> BalanceOut:
+    if account_mode == "live":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Live account balance cannot be modified manually. Fund your account directly via Alpaca.",
+        )
     portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     portfolio.cash_balance += Decimal(str(amount))
     portfolio.updated_at = datetime.now(timezone.utc)
@@ -288,6 +293,11 @@ async def withdraw(
     account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> BalanceOut:
+    if account_mode == "live":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Live account balance cannot be modified manually. Fund your account directly via Alpaca.",
+        )
     portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     amount_dec = Decimal(str(amount))
     if amount_dec > portfolio.cash_balance:
@@ -470,18 +480,24 @@ async def delete_position(
 async def reset_portfolio(
     initial_capital: float = Query(0.0, ge=0.0, description="Starting cash balance"),
     current_user: User = Depends(get_current_active_user),
+    account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     Reset the user's portfolio: close all positions, clear order history,
     and set cash balance back to initial_capital.
     """
+    if account_mode == "live":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Live account balance cannot be modified manually. Fund your account directly via Alpaca.",
+        )
     from sqlalchemy import delete
     from app.models.trade import Trade
     from app.models.order import Order
     from app.models.bot_state import BotState
 
-    portfolio = await _get_portfolio_or_404(current_user, db)
+    portfolio = await _get_portfolio_or_404(current_user, db, account_mode)
     pid = portfolio.id
 
     # Hard-delete all positions (open and closed)
