@@ -267,6 +267,28 @@ _BOT_ID_DDL = [
     "DROP INDEX IF EXISTS ix_portfolios_user_id",
     "DROP INDEX IF EXISTS uq_portfolios_user",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_portfolios_user_mode ON portfolios (user_id, account_mode)",
+
+    # ── custom_bots: user-defined automated bots ─────────────────────────────
+    # This table may not exist if the Alembic migration j1k2l3m4n5o6 didn't
+    # land (PgBouncer DDL rollback issue).  CREATE TABLE IF NOT EXISTS is safe
+    # to run on every startup — it's a no-op when the table already exists.
+    """
+    CREATE TABLE IF NOT EXISTS custom_bots (
+        id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name        VARCHAR(100) NOT NULL,
+        bot_id      VARCHAR(80)  NOT NULL,
+        description TEXT,
+        color       VARCHAR(20)  NOT NULL DEFAULT '#6366f1',
+        config      JSONB        NOT NULL DEFAULT '{}',
+        is_enabled  BOOLEAN      NOT NULL DEFAULT FALSE,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        CONSTRAINT uq_custom_bots_user_name UNIQUE (user_id, name)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_custom_bots_user_id ON custom_bots (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_custom_bots_bot_id  ON custom_bots (bot_id)",
 ]
 
 

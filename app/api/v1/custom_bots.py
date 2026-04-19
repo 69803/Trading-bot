@@ -143,31 +143,35 @@ async def list_custom_bots(
     account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> List[CustomBotListItem]:
-    result = await db.execute(
-        select(CustomBot)
-        .where(CustomBot.user_id == current_user.id)
-        .order_by(CustomBot.created_at.desc())
-    )
-    bots = result.scalars().all()
-
-    items = []
-    for bot in bots:
-        state = await _get_bot_state(db, current_user, bot.bot_id, account_mode)
-        items.append(
-            CustomBotListItem(
-                id=bot.id,
-                name=bot.name,
-                bot_id=bot.bot_id,
-                color=bot.color,
-                is_enabled=bot.is_enabled,
-                is_running=state.is_running if state else False,
-                cycles_run=state.cycles_run if state else 0,
-                last_log=state.last_log if state else None,
-                created_at=bot.created_at,
-                updated_at=bot.updated_at,
-            )
+    try:
+        result = await db.execute(
+            select(CustomBot)
+            .where(CustomBot.user_id == current_user.id)
+            .order_by(CustomBot.created_at.desc())
         )
-    return items
+        bots = result.scalars().all()
+
+        items = []
+        for bot in bots:
+            state = await _get_bot_state(db, current_user, bot.bot_id, account_mode)
+            items.append(
+                CustomBotListItem(
+                    id=bot.id,
+                    name=bot.name,
+                    bot_id=bot.bot_id,
+                    color=bot.color,
+                    is_enabled=bot.is_enabled,
+                    is_running=state.is_running if state else False,
+                    cycles_run=state.cycles_run if state else 0,
+                    last_log=state.last_log if state else None,
+                    created_at=bot.created_at,
+                    updated_at=bot.updated_at,
+                )
+            )
+        return items
+    except Exception as exc:
+        log.exception("list_custom_bots failed", user_id=str(current_user.id), error=str(exc))
+        raise
 
 
 # ── Create ────────────────────────────────────────────────────────────────────
@@ -179,63 +183,84 @@ async def create_custom_bot(
     account_mode: str = Depends(get_account_mode),
     db: AsyncSession = Depends(get_db),
 ) -> CustomBotOut:
-    # Unique name check
-    existing = await db.execute(
-        select(CustomBot).where(
-            CustomBot.user_id == current_user.id,
-            CustomBot.name == payload.name,
-        )
-    )
-    if existing.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Ya ese bot está creado con ese nombre: '{payload.name}'",
-        )
-
-    # Create record with a deterministic bot_id
-    new_id = _uuid.uuid4()
-    bot_id = _make_bot_id(new_id, payload.name)
-    cfg_dict = payload.config.model_dump()
-
-    bot = CustomBot(
-        id=new_id,
-        user_id=current_user.id,
+    log.info(
+        "create_custom_bot called",
+        user_id=str(current_user.id),
         name=payload.name,
-        bot_id=bot_id,
-        description=cfg_dict.get("description"),
-        color=cfg_dict.get("color", "#6366f1"),
-        config=cfg_dict,
-        is_enabled=cfg_dict.get("enabled_on_save", False),
+        account_mode=account_mode,
     )
-    db.add(bot)
-    await db.flush()
-
-    # Sync to StrategyConfig + RiskSettings
-    await _sync_strategy_config(db, current_user, bot_id, account_mode, cfg_dict)
-    await _sync_risk_settings(db, current_user, bot_id, account_mode, cfg_dict)
-
-    # If enabled_on_save → create running BotState (requires symbols)
-    if cfg_dict.get("enabled_on_save") and cfg_dict.get("allowed_symbols"):
-        state_r = await db.execute(
-            select(BotState).where(
-                BotState.user_id == current_user.id,
-                BotState.bot_id == bot_id,
-                BotState.account_mode == account_mode,
+    try:
+        # Unique name check
+        existing = await db.execute(
+            select(CustomBot).where(
+                CustomBot.user_id == current_user.id,
+                CustomBot.name == payload.name,
             )
         )
-        state = state_r.scalars().first()
-        if state is None:
-            state = BotState(user_id=current_user.id, bot_id=bot_id, account_mode=account_mode)
-            db.add(state)
-        state.is_running = True
-        state.started_at = datetime.now(timezone.utc)
-        state.last_log = f"Bot '{payload.name}' started"
+        if existing.scalars().first():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Ya ese bot está creado con ese nombre: '{payload.name}'",
+            )
 
-    await db.commit()
-    await db.refresh(bot)
+        # Create record with a deterministic bot_id
+        new_id = _uuid.uuid4()
+        bot_id = _make_bot_id(new_id, payload.name)
+        cfg_dict = payload.config.model_dump()
 
-    log.info("Custom bot created", user_id=str(current_user.id), bot_id=bot_id, name=payload.name)
-    return CustomBotOut.model_validate(bot)
+        log.info("create_custom_bot: inserting row", bot_id=bot_id)
+
+        bot = CustomBot(
+            id=new_id,
+            user_id=current_user.id,
+            name=payload.name,
+            bot_id=bot_id,
+            description=cfg_dict.get("description"),
+            color=cfg_dict.get("color", "#6366f1"),
+            config=cfg_dict,
+            is_enabled=bool(cfg_dict.get("enabled_on_save", False)),
+        )
+        db.add(bot)
+        await db.flush()
+        log.info("create_custom_bot: flush OK")
+
+        # Sync to StrategyConfig + RiskSettings
+        await _sync_strategy_config(db, current_user, bot_id, account_mode, cfg_dict)
+        await _sync_risk_settings(db, current_user, bot_id, account_mode, cfg_dict)
+
+        # If enabled_on_save → create running BotState (requires symbols)
+        if cfg_dict.get("enabled_on_save") and cfg_dict.get("allowed_symbols"):
+            state_r = await db.execute(
+                select(BotState).where(
+                    BotState.user_id == current_user.id,
+                    BotState.bot_id == bot_id,
+                    BotState.account_mode == account_mode,
+                )
+            )
+            state = state_r.scalars().first()
+            if state is None:
+                state = BotState(user_id=current_user.id, bot_id=bot_id, account_mode=account_mode)
+                db.add(state)
+            state.is_running = True
+            state.started_at = datetime.now(timezone.utc)
+            state.last_log = f"Bot '{payload.name}' started"
+
+        await db.commit()
+        await db.refresh(bot)
+
+        log.info("Custom bot created", user_id=str(current_user.id), bot_id=bot_id, name=payload.name)
+        return CustomBotOut.model_validate(bot)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception(
+            "create_custom_bot FAILED",
+            user_id=str(current_user.id),
+            name=payload.name,
+            error=str(exc),
+        )
+        raise
 
 
 # ── Get ───────────────────────────────────────────────────────────────────────
