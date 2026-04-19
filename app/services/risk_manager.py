@@ -51,6 +51,11 @@ log = get_logger(__name__)
 ATR_SL_MULT      = 2.0    # stop-loss = entry ± ATR × this
 ATR_TP_MULT      = 1.0    # take-profit = entry ± ATR × this
 MIN_RR_RATIO     = 1.0    # warn if risk/reward below this (not a hard reject)
+
+# Minimum guaranteed take-profit: the bot will NEVER close for less than 0.5%
+# gain regardless of how the ATR calculates the TP distance.
+# Goal: all trades produce a meaningful gain, even if small.
+MIN_TP_PCT       = 0.005  # 0.5% minimum take-profit distance from entry
 MIN_ATR_FRACTION = 0.0001 # ATR must be > entry × this to be considered valid
 MIN_SL_TP_DIST   = 0.00010 # minimum absolute distance from entry (~1 pip for EURUSD)
 
@@ -188,6 +193,25 @@ def assess(
             enforced_tp=round(tp_price, 8),
             min_dist=round(_min_dist, 8),
         )
+
+    # Enforce minimum 0.5% TP — never target less than MIN_TP_PCT gain.
+    # ATR-based TP on low-volatility pairs (e.g. EUR/USD with tiny ATR) can
+    # produce a TP only 0.01–0.03% from entry, which gets wiped by spread.
+    # This guarantees every opened trade aims for at least 0.5% profit.
+    if tp_price is not None:
+        _min_tp_dist = entry_price * MIN_TP_PCT
+        _actual_tp_dist = abs(tp_price - entry_price)
+        if _actual_tp_dist < _min_tp_dist:
+            original_tp = tp_price
+            tp_price = (entry_price + _min_tp_dist) if direction == "BUY" else (entry_price - _min_tp_dist)
+            log.info(
+                "TP raised to minimum 0.5%",
+                symbol=symbol, method=method,
+                original_tp=round(original_tp, 8),
+                enforced_tp=round(tp_price, 8),
+                original_pct=round(_actual_tp_dist / entry_price * 100, 4),
+                enforced_pct=round(MIN_TP_PCT * 100, 2),
+            )
 
     # ── 6. Risk-per-trade accounting (informational) ─────────────────────────
     sl_distance  = abs(entry_price - sl_price) if sl_price else 0.0

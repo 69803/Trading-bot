@@ -70,14 +70,17 @@ log = get_logger(__name__)
 CANDLE_LIMIT = 250              # enough for EMA-200 warm-up
 
 # ── Entry quality thresholds ──────────────────────────────────────────────────
-MIN_CONFIDENCE_THRESHOLD = 35   # minimum decision confidence to open any trade (0-100)
-MIN_ADX_FOR_ENTRY        = 15   # minimum ADX to confirm a trend exists
+# Conservative strategy: only enter when the signal is strong and clear.
+# Goal: fewer trades, but all of them high-quality. Better 1 winning trade
+# than 5 uncertain ones.
+MIN_CONFIDENCE_THRESHOLD = 52   # was 35 → requires a genuinely strong signal
+MIN_ADX_FOR_ENTRY        = 20   # was 15 → requires a real trend, not sideways noise
 COOLDOWN_SECONDS         = 900  # minimum seconds between trades on the same symbol (15 min)
 MIN_ATR_PCT              = 0.04 # minimum ATR as % of price (filters micro-range setups)
 
 # Per-symbol stricter rules for noisy pairs
-EURUSD_MIN_CONFIDENCE    = 40   # EURUSD requires higher confidence than default
-EURUSD_MIN_ADX           = 25   # EURUSD requires stronger trend than default
+EURUSD_MIN_CONFIDENCE    = 55   # was 40 → EUR/USD is noisy, needs even stronger signal
+EURUSD_MIN_ADX           = 27   # was 25 → EUR/USD needs a clear directional move
 
 # ── Adaptive profit-protection defaults ───────────────────────────────────────
 # Applied when risk_settings.break_even_trigger_pct == 0 or trailing_stop_pct == 0.
