@@ -76,7 +76,8 @@ CANDLE_LIMIT = 250              # enough for EMA-200 warm-up
 MIN_CONFIDENCE_THRESHOLD = 52   # was 35 → requires a genuinely strong signal
 MIN_ADX_FOR_ENTRY        = 20   # was 15 → requires a real trend, not sideways noise
 COOLDOWN_SECONDS         = 900  # minimum seconds between trades on the same symbol (15 min)
-MIN_ATR_PCT              = 0.04 # minimum ATR as % of price (filters micro-range setups)
+MIN_ATR_PCT              = 0.008 # lowered from 0.04 — forex pairs (EUR/USD) have small ATR
+                                  # TP-too-tiny risk is now covered by MIN_TP_PCT=0.5% in risk_manager
 
 # Per-symbol stricter rules for noisy pairs
 EURUSD_MIN_CONFIDENCE    = 55   # was 40 → EUR/USD is noisy, needs even stronger signal
