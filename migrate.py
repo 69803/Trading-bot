@@ -51,6 +51,9 @@ def main() -> None:
     # a single failure never aborts the rest.
     _ensure_bot_id_columns(sync_url)
 
+    # Safety net: create custom_bots table if Alembic migration didn't land.
+    _ensure_custom_bots_table(sync_url)
+
     print("migrate.py: done")
 
 
@@ -129,6 +132,52 @@ def _ensure_bot_id_columns(sync_url: str) -> None:
 
     if errors:
         print(f"migrate.py: {len(errors)} non-fatal warning(s) during _ensure_bot_id_columns")
+
+
+_CUSTOM_BOTS_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS custom_bots (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name        VARCHAR(100) NOT NULL,
+        bot_id      VARCHAR(80) NOT NULL,
+        description TEXT,
+        color       VARCHAR(20) NOT NULL DEFAULT '#6366f1',
+        config      JSONB NOT NULL DEFAULT '{}',
+        is_enabled  BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT uq_custom_bots_user_name UNIQUE (user_id, name)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_custom_bots_user_id ON custom_bots (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_custom_bots_bot_id  ON custom_bots (bot_id)",
+]
+
+
+def _ensure_custom_bots_table(sync_url: str) -> None:
+    engine = create_engine(sync_url, connect_args={"prepare_threshold": 0})
+    try:
+        for stmt in _CUSTOM_BOTS_STATEMENTS:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(stmt))
+                print(f"migrate.py: OK  {stmt.strip()[:80]}")
+            except Exception as exc:
+                print(f"migrate.py: WARN custom_bots — {exc}")
+
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'custom_bots'"
+            )).fetchone()
+            if row:
+                print("migrate.py: VERIFIED custom_bots EXISTS")
+            else:
+                print("migrate.py: FATAL custom_bots MISSING — aborting")
+                sys.exit(1)
+    finally:
+        engine.dispose()
 
 
 if __name__ == "__main__":
