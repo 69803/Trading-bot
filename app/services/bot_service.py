@@ -410,14 +410,15 @@ async def _run_user_cycle(db: AsyncSession, state: BotState) -> None:
     )
 
     # Persist full log history — one row per cycle, never overwritten
-    symbol_hint = config.symbols[0] if config.symbols else None
-    db.add(BotLog(
-        user_id=user_id,
-        timestamp=now,
-        message=state.last_log,
-        bot_id=bot_id,
-        symbol=symbol_hint if len(config.symbols) == 1 else None,
-    ))
+    if settings.ENABLE_DB_LOGGING:
+        symbol_hint = config.symbols[0] if config.symbols else None
+        db.add(BotLog(
+            user_id=user_id,
+            timestamp=now,
+            message=state.last_log,
+            bot_id=bot_id,
+            symbol=symbol_hint if len(config.symbols) == 1 else None,
+        ))
 
     # Persist a performance snapshot (rate-limited to once per hour)
     try:

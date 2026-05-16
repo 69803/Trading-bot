@@ -14,6 +14,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.logger import get_logger
 from app.models.decision_log import DecisionLog
 from app.schemas.decision import FinalDecision
@@ -50,6 +51,9 @@ async def log_decision(
         executed:             True if an order was placed.
         execution_rejection:  Reason order was not placed (if executed=False).
     """
+    if not settings.ENABLE_DB_LOGGING:
+        return
+
     ind = technical.indicators
 
     entry = DecisionLog(

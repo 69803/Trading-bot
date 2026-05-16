@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Frontend URL for CORS (set to actual Render URL in production)
     FRONTEND_URL: str = ""
 
+    # Set to false to stop writing decision_logs and bot_logs to the DB.
+    ENABLE_DB_LOGGING: bool = True
+
     # Historical data providers
     TRADING_ECONOMICS_API_KEY: str = ""   # tradingeconomics.com — for historical events
 
